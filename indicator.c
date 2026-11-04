@@ -313,10 +313,15 @@ static gboolean sensor_tick(gpointer d) {
     const char *col = !strcmp(cls, "low") ? (bat_col_low ? bat_col_low : "#a55555") :
                       !strcmp(cls, "mid") ? (bat_col_mid ? bat_col_mid : "#8f7a3a") :
                                             (bat_col_ok ? bat_col_ok : "#4f7a52");
-    char markup[128];
-    snprintf(markup, sizeof markup, "<span foreground=\"%s\">%s</span>", col, arrow);
-    gtk_label_set_markup(GTK_LABEL(arrow_l), markup);
-    gtk_widget_set_visible(arrow_l, arrow[0] != '\0');
+    if (arrow[0] != '\0') {
+        char markup[160];
+        snprintf(markup, sizeof markup, "<span font_family=\"GeistMono Nerd Font\" font_size=\"10pt\" foreground=\"%s\">%s</span>", col, arrow);
+        gtk_label_set_markup(GTK_LABEL(arrow_l), markup);
+        gtk_widget_set_visible(arrow_l, TRUE);
+    } else {
+        gtk_label_set_text(GTK_LABEL(arrow_l), "");
+        gtk_widget_set_visible(arrow_l, FALSE);
+    }
 
     char w[24];
     snprintf(w, sizeof w, "%.1fW", b.watts);
@@ -488,10 +493,22 @@ int indicator_run(void) {
             bat_col_ok, bat_col_mid, bat_col_low);
         g_strlcat(css_str, bat_css, sizeof(css_str));
 
+        /* Strictly enforce global default font on indicator so external CSS (e.g. walker) cannot distort it */
+        const char *font_lock =
+            "window#indicator, #indicator, #indicator box, #indicator label {\n"
+            "  font-family: \"GeistMono Nerd Font\", monospace !important;\n"
+            "  font-size: 13px !important;\n"
+            "}\n"
+            "#indicator #arrow {\n"
+            "  font-family: \"GeistMono Nerd Font\", monospace !important;\n"
+            "  font-size: 12px !important;\n"
+            "}\n";
+        g_strlcat(css_str, font_lock, sizeof(css_str));
+
         GtkCssProvider *bp = gtk_css_provider_new();
         gtk_css_provider_load_from_data(bp, css_str, -1, NULL);
         gtk_style_context_add_provider_for_screen(gdk_screen_get_default(), GTK_STYLE_PROVIDER(bp),
-                                                  GTK_STYLE_PROVIDER_PRIORITY_USER + 10);
+                                                  GTK_STYLE_PROVIDER_PRIORITY_USER + 50);
     }
 
     self_exe = g_file_read_link("/proc/self/exe", NULL);

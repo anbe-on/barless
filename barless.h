@@ -59,5 +59,6 @@ int  dashboard_run(gboolean spawned);
  * changed(n) is called with the number of visible tray items. */
 void tray_init(GtkWidget *box, int icon_px, void (*changed)(int n));
 void tray_set_origin(int x, int y);              /* screen position of the window holding the box */
+GList *tray_get_widgets(void);                   /* list of GtkWidget* (buttons) for active tray items */
 
 #endif

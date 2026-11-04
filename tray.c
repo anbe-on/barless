@@ -22,7 +22,7 @@ typedef struct {
     char *icon_name, *theme_path, *title, *status, *menu_path;
     gboolean is_menu;                         /* ItemIsMenu: a click should open the menu, not Activate */
     GdkPixbuf *src;                           /* only for apps that send raw pixels */
-    GtkWidget *ebox, *img;
+    GtkWidget *btn, *img;
     guint sig;
 } TrayItem;
 
@@ -39,8 +39,10 @@ void tray_set_origin(int x, int y) { origin_x = x; origin_y = y; }
 static void notify_changed(void) {
     if (!changed_cb) return;
     int n = 0;
-    for (GList *l = tray_items; l; l = l->next)
-        if (gtk_widget_get_visible(((TrayItem *)l->data)->ebox)) n++;
+    for (GList *l = tray_items; l; l = l->next) {
+        TrayItem *t = (TrayItem *)l->data;
+        if (t->btn && gtk_widget_get_visible(t->btn)) n++;
+    }
     changed_cb(n);
 }
 
@@ -110,8 +112,10 @@ static void refresh_icon(TrayItem *t) {
     if (!pb) pb = gtk_icon_theme_load_icon(th, "image-missing", icon_px, GTK_ICON_LOOKUP_FORCE_SIZE, NULL);
     gtk_image_set_from_pixbuf(GTK_IMAGE(t->img), pb);
     if (pb) g_object_unref(pb);
-    gtk_widget_set_tooltip_text(t->ebox, t->title);
-    gtk_widget_set_visible(t->ebox, g_strcmp0(t->status, "Passive") != 0);
+    if (t->btn) {
+        gtk_widget_set_tooltip_text(t->btn, t->title);
+        gtk_widget_set_visible(t->btn, g_strcmp0(t->status, "Passive") != 0);
+    }
 }
 
 static void on_item_props(GObject *src, GAsyncResult *res, gpointer data) {
@@ -274,8 +278,21 @@ static gboolean on_item_click(GtkWidget *wd, GdkEventButton *e, gpointer data) {
     return TRUE;
 }
 
+static gboolean on_item_scroll(GtkWidget *wd, GdkEventScroll *e, gpointer data) {
+    (void)wd;
+    TrayItem *t = data;
+    const char *dir = (e->direction == GDK_SCROLL_UP || e->direction == GDK_SCROLL_DOWN) ? "vertical" : "horizontal";
+    int delta = (e->direction == GDK_SCROLL_UP) ? 1 : (e->direction == GDK_SCROLL_DOWN) ? -1 : 0;
+    if (delta != 0) {
+        g_dbus_connection_call(bus, t->service, t->path, SNI_ITEM, "Scroll",
+                               g_variant_new("(is)", delta, dir),
+                               NULL, G_DBUS_CALL_FLAGS_NONE, -1, NULL, NULL, NULL);
+    }
+    return TRUE;
+}
+
 static void item_add(const char *reg) {
-    if (!tray_box) return;
+    if (!changed_cb && !tray_box) return;
     for (GList *l = tray_items; l; l = l->next)
         if (!strcmp(((TrayItem *)l->data)->id, reg)) return;
 
@@ -286,14 +303,22 @@ static void item_add(const char *reg) {
     t->service = slash ? g_strndup(reg, slash - reg) : g_strdup(reg);
     t->path    = slash ? g_strdup(slash) : g_strdup("/StatusNotifierItem");
 
-    t->ebox = gtk_event_box_new();
-    gtk_event_box_set_visible_window(GTK_EVENT_BOX(t->ebox), FALSE);
+    t->btn = gtk_button_new();
+    gtk_style_context_add_class(gtk_widget_get_style_context(t->btn), "action");
+    gtk_style_context_add_class(gtk_widget_get_style_context(t->btn), "tray-btn");
     t->img = gtk_image_new();
-    gtk_container_add(GTK_CONTAINER(t->ebox), t->img);
-    gtk_widget_add_events(t->ebox, GDK_BUTTON_PRESS_MASK);
-    g_signal_connect(t->ebox, "button-press-event", G_CALLBACK(on_item_click), t);
-    gtk_box_pack_start(GTK_BOX(tray_box), t->ebox, FALSE, FALSE, 0);
-    gtk_widget_show_all(t->ebox);
+    gtk_widget_set_halign(t->img, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(t->img, GTK_ALIGN_CENTER);
+    gtk_container_add(GTK_CONTAINER(t->btn), t->img);
+
+    gtk_widget_add_events(t->btn, GDK_BUTTON_PRESS_MASK | GDK_SCROLL_MASK);
+    g_signal_connect(t->btn, "button-press-event", G_CALLBACK(on_item_click), t);
+    g_signal_connect(t->btn, "scroll-event", G_CALLBACK(on_item_scroll), t);
+
+    if (tray_box) {
+        gtk_box_pack_start(GTK_BOX(tray_box), t->btn, FALSE, FALSE, 0);
+    }
+    gtk_widget_show_all(t->btn);
 
     t->sig = g_dbus_connection_signal_subscribe(bus, t->service, SNI_ITEM, NULL, t->path, NULL,
                  G_DBUS_SIGNAL_FLAGS_NONE, on_item_signal, item_ref(t), item_unref);
@@ -308,7 +333,7 @@ static void item_remove(const char *reg) {
         tray_items = g_list_delete_link(tray_items, l);
         t->gone = TRUE;
         g_dbus_connection_signal_unsubscribe(bus, t->sig);
-        gtk_widget_destroy(t->ebox);
+        if (t->btn) gtk_widget_destroy(t->btn);
         item_unref(t);
         notify_changed();
         return;
@@ -437,7 +462,7 @@ static void on_bus(GObject *src, GAsyncResult *res, gpointer data) {
     g_dbus_connection_register_object(bus, SNI_WPATH, ni->interfaces[0], &vt, NULL, NULL, NULL);
     g_bus_own_name_on_connection(bus, SNI_WATCHER, G_BUS_NAME_OWNER_FLAGS_NONE, NULL, NULL, NULL, NULL);
 
-    if (!tray_box) return;       /* watcher-only mode */
+    if (!changed_cb && !tray_box) return;       /* watcher-only mode */
 
     host_name = g_strdup_printf("org.kde.StatusNotifierHost-%d-1", (int)getpid());
     g_bus_own_name_on_connection(bus, host_name, G_BUS_NAME_OWNER_FLAGS_NONE, NULL, NULL, NULL, NULL);
@@ -452,4 +477,13 @@ void tray_init(GtkWidget *box, int px, void (*changed)(int n)) {
     icon_px = px > 0 ? px : 18;
     changed_cb = changed;
     g_bus_get(G_BUS_TYPE_SESSION, NULL, on_bus, NULL);
+}
+
+GList *tray_get_widgets(void) {
+    GList *res = NULL;
+    for (GList *l = tray_items; l; l = l->next) {
+        TrayItem *t = l->data;
+        if (t->btn && !t->gone) res = g_list_append(res, t->btn);
+    }
+    return res;
 }

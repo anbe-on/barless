@@ -22,6 +22,9 @@
 /* widgets that dash_tick() refreshes */
 static GtkWidget *w_clock, *w_date, *w_cpu, *w_temp, *w_net, *w_bat;
 static GtkWidget *tray_card = NULL, *tray_box = NULL;
+static GtkWidget *bgrid = NULL;
+static GList *user_buttons = NULL;
+static gboolean tray_as_buttons = TRUE;
 static GtkWidget *w_netchart = NULL, *w_cpuchart = NULL, *w_tempchart = NULL, *w_batchart = NULL;
 
 typedef struct {
@@ -39,8 +42,48 @@ static GtkAlign align_cfg(const char *key, const char *def) {
     return a;
 }
 
+static void relayout_button_grid(void) {
+    if (!bgrid) return;
+
+    /* Detach all current widgets from bgrid without destroying them */
+    GList *children = gtk_container_get_children(GTK_CONTAINER(bgrid));
+    for (GList *l = children; l; l = l->next) {
+        gtk_container_remove(GTK_CONTAINER(bgrid), GTK_WIDGET(l->data));
+    }
+    g_list_free(children);
+
+    int cols = MAX(1, cfg_int("dashboard", "columns", 3));
+    int i = 0;
+
+    if (tray_as_buttons) {
+        /* Tray items first! Positioned first until exhausted before user buttons */
+        GList *tray_widgets = tray_get_widgets();
+        for (GList *l = tray_widgets; l; l = l->next) {
+            GtkWidget *w = GTK_WIDGET(l->data);
+            if (gtk_widget_get_visible(w)) {
+                gtk_grid_attach(GTK_GRID(bgrid), w, i % cols, i / cols, 1, 1);
+                i++;
+            }
+        }
+        g_list_free(tray_widgets);
+    }
+
+    /* User-defined buttons from config.ini */
+    for (GList *l = user_buttons; l; l = l->next) {
+        GtkWidget *w = GTK_WIDGET(l->data);
+        gtk_grid_attach(GTK_GRID(bgrid), w, i % cols, i / cols, 1, 1);
+        i++;
+    }
+
+    gtk_widget_show_all(bgrid);
+}
+
 static void on_tray_changed(int n) {
-    if (tray_card) gtk_widget_set_visible(tray_card, n > 0);
+    if (tray_as_buttons) {
+        relayout_button_grid();
+    } else if (tray_card) {
+        gtk_widget_set_visible(tray_card, n > 0);
+    }
 }
 
 static void on_button_clicked(GtkButton *b, gpointer cmd) {
@@ -216,11 +259,11 @@ static void build_dashboard(GtkWidget *root) {
     if (row) new_card(root, grid); else gtk_widget_destroy(grid);
 
     /* --- buttons: one [button:xxx] group in config.ini each --- */
-    GtkWidget *bgrid = gtk_grid_new();
+    tray_as_buttons = cfg_bool("dashboard", "tray_buttons", TRUE);
+    bgrid = gtk_grid_new();
     gtk_grid_set_row_spacing(GTK_GRID(bgrid), 8);
     gtk_grid_set_column_spacing(GTK_GRID(bgrid), 8);
     gtk_grid_set_column_homogeneous(GTK_GRID(bgrid), TRUE);
-    int cols = MAX(1, cfg_int("dashboard", "columns", 3)), i = 0;
     gboolean show_labels = cfg_bool("dashboard", "show_labels", TRUE);
     char **groups = cfg_groups();
     for (char **g = groups; *g; g++) {
@@ -246,21 +289,24 @@ static void build_dashboard(GtkWidget *root) {
             gtk_widget_set_name(b, *g + 7);                       /* #menu, #wifi, #shutdown ... */
             if (tip) gtk_widget_set_tooltip_text(b, tip);
             g_signal_connect_data(b, "clicked", G_CALLBACK(on_button_clicked), run, free_cmd, 0);
-            gtk_grid_attach(GTK_GRID(bgrid), b, i % cols, i / cols, 1, 1);
-            i++;
+            g_object_ref_sink(b);
+            user_buttons = g_list_append(user_buttons, b);
         }
         g_free(label); g_free(icon); g_free(cmd); g_free(tip);
     }
     g_strfreev(groups);
     new_card(root, bgrid);
+    relayout_button_grid();
 
-    /* --- tray (hidden until an app has an icon) --- */
-    tray_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
-    gtk_widget_set_halign(tray_box, align_cfg("tray_align", "center"));
-    tray_card = new_card(root, tray_box);
-    gtk_widget_set_name(tray_card, "tray");
-    gtk_widget_set_no_show_all(tray_card, TRUE);     /* hidden until the first icon arrives... */
-    gtk_widget_show(tray_box);                       /* ...but the box inside must still be shown */
+    if (!tray_as_buttons) {
+        /* legacy standalone tray card */
+        tray_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+        gtk_widget_set_halign(tray_box, align_cfg("tray_align", "center"));
+        tray_card = new_card(root, tray_box);
+        gtk_widget_set_name(tray_card, "tray");
+        gtk_widget_set_no_show_all(tray_card, TRUE);     /* hidden until the first icon arrives... */
+        gtk_widget_show(tray_box);                       /* ...but the box inside must still be shown */
+    }
 }
 /* ================================================================== */
 
@@ -544,7 +590,7 @@ int dashboard_run(gboolean spawned) {
         load_pos();
     }
     gtk_widget_show_all(win);
-    tray_init(tray_box, cfg_int("dashboard", "tray_icon", 18), on_tray_changed);
+    tray_init(tray_as_buttons ? NULL : tray_box, cfg_int("dashboard", "tray_icon", 18), on_tray_changed);
 
     history_init();
     history_tick();

@@ -168,6 +168,7 @@ key_align=left
 value_align=right
 button_align=center
 tray_align=center       # Tray icons alignment: center (default), left, or right
+tray_buttons=true       # Show tray items as buttons in the grid (placed first before user buttons)
 ```
 
 ---
