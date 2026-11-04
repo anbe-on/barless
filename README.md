@@ -228,7 +228,7 @@ hide_on_empty=false
 
 # Window background color or transparency:
 bg=transparent
-# Or specify alpha directly (0.0 to 1.0; tints the indicator pill with foreground or custom color):
+# Or specify alpha directly (0.0 to 1.0; uses theme @background like Kanagawa black by default):
 # bg_alpha=0.1
 ```
 
@@ -241,16 +241,16 @@ Both the indicator and dashboard windows, as well as cards, support customizable
 #### In `config.ini`:
 ```ini
 [indicator]
-# Set background color or transparency:
+# Set background color or transparency (transparent | @background | @foreground | #16161d | rgba(...)):
 bg=transparent
-# Or e.g.: bg=rgba(22, 22, 29, 0.85)
-# Or e.g.: bg_alpha=0.2
+# Or specify alpha (0.0 to 1.0; applies transparency to theme @background or to the specified `bg`):
+# bg_alpha=0.2
 
 [dashboard]
 # Window background:
 bg=transparent
 # Or e.g.: bg=rgba(22, 22, 29, 0.75)
-# Or e.g.: bg_alpha=0.0
+# Or e.g.: bg_alpha=0.0   (uses theme @background)
 
 # Card background transparency (0.0 = fully transparent, 1.0 = solid):
 card_alpha=0.06

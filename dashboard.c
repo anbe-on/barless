@@ -484,7 +484,7 @@ int dashboard_run(gboolean spawned) {
                 snprintf(css_str, sizeof css_str, "window#dashboard { background-color: %s; }", bg);
             }
         } else if (bg_alpha > 0.0) {
-            snprintf(css_str, sizeof css_str, "window#dashboard { background-color: alpha(@foreground, %.2f); }", bg_alpha);
+            snprintf(css_str, sizeof css_str, "window#dashboard { background-color: alpha(@background, %.2f); }", bg_alpha);
         } else {
             snprintf(css_str, sizeof css_str, "window#dashboard { background-color: transparent; }");
         }

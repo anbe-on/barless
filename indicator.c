@@ -470,7 +470,7 @@ int indicator_run(void) {
         } else if (bg_alpha > 0.0) {
             snprintf(css_str, sizeof css_str,
                 "window#indicator { background-color: transparent; }\n"
-                "#indicator box { background-color: alpha(@foreground, %.2f); border-radius: %dpx; }\n",
+                "#indicator box { background-color: alpha(@background, %.2f); border-radius: %dpx; }\n",
                 bg_alpha, rad);
         } else if (rad > 0) {
             snprintf(css_str, sizeof css_str,
