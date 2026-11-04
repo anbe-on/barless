@@ -1,0 +1,569 @@
+/* common.c - config file, CSS loading, sensor readers */
+#include "panelless.h"
+#include <glib/gstdio.h>
+#include <glob.h>
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+
+/* ================================================================== */
+/* Default files (written on first run, never overwritten)             */
+/* ================================================================== */
+static const char DEFAULT_CONFIG[] =
+"# panelless config (key-file format). Restart panelless to apply changes.\n"
+"# Fonts, colours and sizes live in style.css, not here.\n"
+"\n"
+"[indicator]\n"
+"# distance from the top-right corner, px\n"
+"margin_top=6\n"
+"margin_right=10\n"
+"# seconds between battery / temperature refreshes\n"
+"interval=5\n"
+"# OLED care: nudge the indicator by shift_px every shift_every seconds (0 = off)\n"
+"shift_every=300\n"
+"shift_px=2\n"
+"# hover dodge: jump to top-centre when the pointer touches it. dodge_ms = how long\n"
+"# before it checks whether the pointer left and comes back\n"
+"dodge=true\n"
+"dodge_ms=1200\n"
+"show_temp=true\n"
+"show_watts=true\n"
+"# battery look: arrow (compact: the up/down arrow is coloured by charge level; idle/full shows a dot)\n"
+"#               | square (the little square only) | both\n"
+"battery_style=arrow\n"
+"# battery states: .ok above battery_mid, .mid up to it, .low at/below battery_low\n"
+"battery_mid=50\n"
+"battery_low=20\n"
+"# temperature states: .warm and .hot on #temp\n"
+"temp_warm=65\n"
+"temp_hot=85\n"
+"# unfilled part of the battery square, 0..1\n"
+"track_alpha=0.25\n"
+"radius=0\n"
+"# optional: force one sensor file instead of auto-detect (see: panelless --info)\n"
+"# temp_path=/sys/devices/platform/coretemp.0/hwmon/hwmon5/temp1_input\n"
+"\n"
+"[dashboard]\n"
+"# open automatically on a workspace with no windows (needs Hyprland)\n"
+"auto=true\n"
+"width=380\n"
+"# gap to the screen edges, px (margin_top is bigger so it clears the indicator)\n"
+"margin=12\n"
+"margin_top=40\n"
+"columns=3\n"
+"# seconds between stat refreshes (only runs while the dashboard is open)\n"
+"interval=5\n"
+"tray_icon=18\n"
+"# corner radius (px) of cards and buttons. 0 = square. Screens differ, so set what suits yours\n"
+"radius=0\n"
+"# text placement: left | center | right\n"
+"clock_align=left\n"
+"date_align=left\n"
+"key_align=left\n"
+"value_align=right\n"
+"button_align=center\n"
+"# middle-click-drag the panel to move it; the spot is remembered in position.ini\n"
+"# (delete that file to go back to the default corner). Set false to disable.\n"
+"movable=true\n"
+"# which stats to show, in this order. Remove a name to hide it: cpu, temp, net, battery\n"
+"stats=cpu,temp,net,battery\n"
+"# line chart under the net row (download solid, upload dimmer), one sample per second\n"
+"net_chart=true\n"
+"net_chart_seconds=30\n"
+"chart_height=36\n"
+"# buttons: false = icon only (tooltip still shows the label)\n"
+"show_labels=true\n"
+"# used by buttons with terminal=true\n"
+"terminal=xdg-terminal-exec\n"
+"\n"
+"# Buttons: one [button:name] group each, shown in this order. Add / delete / reorder freely.\n"
+"#   icon     a Nerd Font glyph (browse them at nerdfonts.com/cheat-sheet)\n"
+"#   label    text next to the icon (optional if there is an icon)\n"
+"#   cmd      what to run. Split like a shell would, but NOT run through one: use  sh -c '...'  for pipes\n"
+"#   terminal true = run it inside a terminal (for TUIs such as btop, nmtui, any omarchy tui)\n"
+"#   hide     true = keep the group but do not show it\n"
+"#   tooltip  hover text (optional)\n"
+"[button:menu]\n"
+"icon=\xf3\xb0\x85\x80\n"          /* U+F0140 */
+"label=Menu\n"
+"cmd=omarchy-menu-alternative\n"
+"tooltip=Launcher\n"
+"\n"
+"[button:wifi]\n"
+"icon=\xf3\xb0\xa4\xa8\n"          /* U+F0928 */
+"label=Wifi\n"
+"cmd=omarchy-launch-wifi\n"
+"\n"
+"[button:bluetooth]\n"
+"icon=\xf3\xb0\x82\xaf\n"          /* U+F00AF */
+"label=Bluetooth\n"
+"cmd=omarchy-launch-bluetooth\n"
+"\n"
+"[button:lock]\n"
+"icon=\xef\x80\xa3\n"              /* U+F023 */
+"label=Lock\n"
+"cmd=hyprlock\n"
+"\n"
+"[button:sleep]\n"
+"icon=\xf3\xb0\xa4\x84\n"          /* U+F0904 */
+"label=Sleep\n"
+"cmd=systemctl suspend\n"
+"\n"
+"[button:restart]\n"
+"icon=\xee\xab\x92\n"              /* U+EAD2 */
+"label=Restart\n"
+"cmd=systemctl reboot\n"
+"\n"
+"[button:shutdown]\n"
+"icon=\xef\x80\x91\n"              /* U+F011 */
+"label=Shutdown\n"
+"cmd=systemctl poweroff\n"
+"\n"
+"# Example: a terminal app (remove the leading # to enable)\n"
+"#[button:btop]\n"
+"#label=btop\n"
+"#cmd=btop\n"
+"#terminal=true\n";
+
+static const char DEFAULT_CSS[] =
+"/* panelless style.css - edit freely, it reloads when you save (and on Omarchy theme change). */\n"
+"\n"
+"/* Same colour file your waybar imports, so @foreground / @background follow the theme.\n"
+"   The two lines before it are only a fallback if that file is missing. */\n"
+"@define-color foreground #dcd7ba;\n"
+"@define-color background #16161d;\n"
+"@import \"../omarchy/current/theme/waybar.css\";\n"
+"\n"
+"* {\n"
+"  font-family: \"GeistMono Nerd Font\", monospace;\n"
+"  font-size: 13px;\n"
+"}\n"
+"\n"
+"/* ============ always-on indicator ============\n"
+"   Transparent window = those pixels stay off on an OLED. Keep colours dim. */\n"
+"window#indicator { background-color: transparent; }\n"
+"#indicator box   { padding: 2px 6px; }\n"
+"#indicator label { color: alpha(@foreground, 0.55); margin: 0 5px; }\n"
+"#indicator #time { color: alpha(@foreground, 0.65); }\n"
+"\n"
+"/* the battery square: its colour is the state colour; size = min-width/min-height */\n"
+"#battery        { min-width: 11px; min-height: 11px; color: #4f7a52; }\n"
+"#battery.mid    { color: #8f7a3a; }\n"
+"#battery.low    { color: #a55555; }\n"
+"/* the same state class is also set on #arrow and #watts if you want them tinted */\n"
+"#indicator #arrow       { color: #4f7a52; }\n"
+"#indicator #arrow.mid   { color: #8f7a3a; }\n"
+"#indicator #arrow.low   { color: #a55555; }\n"
+"#watts.low { color: #a55555; }   /* uncomment/add .mid too if you want the watts tinted */\n"
+"\n"
+"#temp.warm { color: #8f7a3a; }\n"
+"#temp.hot  { color: #a55555; }\n"
+"\n"
+"/* ============ dashboard (empty workspace) ============ */\n"
+"window#dashboard { background-color: transparent; }\n"
+"#panel { padding: 0; }\n"
+"\n"
+".card {\n"
+"  background-color: alpha(@foreground, 0.06);\n"
+"  padding: 14px 16px;\n"
+"  margin-bottom: 10px;\n"
+"}\n"
+"/* corner radius: [dashboard] radius in config.ini (add your own border-radius here to override).\n"
+"   Bold / italic work on any element, e.g.  #bigclock { font-weight: bold; }  #date { font-style: italic; } */\n"
+"#netchart { color: alpha(@foreground, 0.8); }   /* chart line colour (upload is drawn dimmer) */\n"
+"#bigclock { font-size: 46px; color: alpha(@foreground, 0.9); }\n"
+"#date     { font-size: 15px; color: alpha(@foreground, 0.55); }\n"
+".stat-key { color: alpha(@foreground, 0.45); }\n"
+".stat-val { color: @foreground; }\n"
+"\n"
+"button.action {\n"
+"  background-image: none;\n"
+"  box-shadow: none;\n"
+"  text-shadow: none;\n"
+"  border: none;\n"
+"  padding: 12px 8px;\n"
+"  color: @foreground;\n"
+"  background-color: alpha(@foreground, 0.06);\n"
+"  transition: background-color 150ms ease, color 150ms ease;\n"
+"}\n"
+"button.action:hover {\n"
+"  background-color: @foreground;\n"
+"  color: @background;\n"
+"}\n";
+
+/* ================================================================== */
+/* Paths                                                               */
+/* ================================================================== */
+const char *cfg_dir(void) {
+    static char *d = NULL;
+    if (!d) d = g_build_filename(g_get_user_config_dir(), "panelless", NULL);
+    return d;
+}
+
+const char *sysfs_root(void) {
+    const char *r = g_getenv("PANELLESS_SYSFS");
+    return (r && *r) ? r : "/sys";
+}
+
+static void ensure_file(const char *name, const char *content) {
+    char *p = g_build_filename(cfg_dir(), name, NULL);
+    if (!g_file_test(p, G_FILE_TEST_EXISTS)) {
+        g_mkdir_with_parents(cfg_dir(), 0755);
+        g_file_set_contents(p, content, -1, NULL);
+    }
+    g_free(p);
+}
+
+/* ================================================================== */
+/* Config (GKeyFile: part of GLib, no extra dependency)                */
+/* ================================================================== */
+static GKeyFile *kf = NULL;
+
+void cfg_load(void) {
+    ensure_file("config.ini", DEFAULT_CONFIG);
+    ensure_file("style.css", DEFAULT_CSS);
+    kf = g_key_file_new();
+    char *p = g_build_filename(cfg_dir(), "config.ini", NULL);
+    GError *e = NULL;
+    if (!g_key_file_load_from_file(kf, p, G_KEY_FILE_NONE, &e)) {
+        g_printerr("panelless: %s: %s (using defaults)\n", p, e->message);
+        g_error_free(e);
+    }
+    g_free(p);
+}
+
+int cfg_int(const char *g, const char *k, int def) {
+    if (!kf || !g_key_file_has_key(kf, g, k, NULL)) return def;
+    GError *e = NULL;
+    int v = g_key_file_get_integer(kf, g, k, &e);
+    if (e) { g_error_free(e); return def; }
+    return v;
+}
+
+double cfg_dbl(const char *g, const char *k, double def) {
+    if (!kf || !g_key_file_has_key(kf, g, k, NULL)) return def;
+    GError *e = NULL;
+    double v = g_key_file_get_double(kf, g, k, &e);
+    if (e) { g_error_free(e); return def; }
+    return v;
+}
+
+gboolean cfg_bool(const char *g, const char *k, gboolean def) {
+    if (!kf || !g_key_file_has_key(kf, g, k, NULL)) return def;
+    GError *e = NULL;
+    gboolean v = g_key_file_get_boolean(kf, g, k, &e);
+    if (e) { g_error_free(e); return def; }
+    return v;
+}
+
+char *cfg_str(const char *g, const char *k, const char *def) {
+    char *v = kf ? g_key_file_get_string(kf, g, k, NULL) : NULL;
+    if (v) return v;
+    return def ? g_strdup(def) : NULL;
+}
+
+char **cfg_groups(void) {
+    return kf ? g_key_file_get_groups(kf, NULL) : g_new0(char *, 1);
+}
+
+/* ================================================================== */
+/* CSS: user file at USER priority, hot-reloaded                       */
+/* ================================================================== */
+static GtkCssProvider *css = NULL;
+static guint css_reload_id = 0;
+
+static void css_load(void) {
+    char *p = g_build_filename(cfg_dir(), "style.css", NULL);
+    GError *e = NULL;
+    if (!gtk_css_provider_load_from_path(css, p, &e)) {
+        g_printerr("panelless: %s: %s (using built-in style)\n", p, e->message);
+        g_error_free(e);
+        gtk_css_provider_load_from_data(css, DEFAULT_CSS, -1, NULL);
+    }
+    g_free(p);
+}
+
+static gboolean css_reload_cb(gpointer d) {
+    (void)d;
+    css_reload_id = 0;
+    css_load();
+    return G_SOURCE_REMOVE;
+}
+
+static void css_changed(GFileMonitor *m, GFile *f, GFile *other, GFileMonitorEvent ev, gpointer d) {
+    (void)m; (void)other; (void)ev;
+    /* the user's style.css, or anything directly under omarchy/current (theme swap) */
+    if (d) {
+        char *b = g_file_get_basename(f);
+        gboolean ours = !g_strcmp0(b, "style.css");
+        g_free(b);
+        if (!ours) return;
+    }
+    if (!css_reload_id) css_reload_id = g_timeout_add(250, css_reload_cb, NULL);
+}
+
+static void css_watch(const char *dir, gboolean only_style) {
+    GFile *f = g_file_new_for_path(dir);
+    GFileMonitor *m = g_file_monitor_directory(f, G_FILE_MONITOR_WATCH_MOVES, NULL, NULL);
+    if (m) g_signal_connect(m, "changed", G_CALLBACK(css_changed), only_style ? GINT_TO_POINTER(1) : NULL);
+    g_object_unref(f);
+}
+
+void css_init(void) {
+    css = gtk_css_provider_new();
+    gtk_style_context_add_provider_for_screen(gdk_screen_get_default(), GTK_STYLE_PROVIDER(css),
+                                              GTK_STYLE_PROVIDER_PRIORITY_USER);
+    css_load();
+    css_watch(cfg_dir(), TRUE);
+    char *cur = g_build_filename(g_get_user_config_dir(), "omarchy", "current", NULL);
+    css_watch(cur, FALSE);
+    g_free(cur);
+}
+
+/* ================================================================== */
+/* Small readers                                                       */
+/* ================================================================== */
+static long read_long(const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+    long v = -1;
+    if (fscanf(f, "%ld", &v) != 1) v = -1;
+    fclose(f);
+    return v;
+}
+
+static void read_str(const char *path, char *buf, size_t len) {
+    buf[0] = '\0';
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    if (fgets(buf, len, f)) buf[strcspn(buf, "\n")] = '\0';
+    fclose(f);
+}
+
+/* ================================================================== */
+/* Battery                                                             */
+/* ================================================================== */
+void bat_read(BatInfo *b) {
+    memset(b, 0, sizeof(*b));
+
+    /* test hook: PANELLESS_FAKE_BAT="18 discharging 7.5"  (preview CSS states) */
+    const char *fake = g_getenv("PANELLESS_FAKE_BAT");
+    if (fake && *fake) {
+        char st[32] = "discharging";
+        int cap = 50;
+        double w = 5.0;
+        sscanf(fake, "%d %31s %lf", &cap, st, &w);
+        b->present = TRUE;
+        b->cap = CLAMP(cap, 0, 100);
+        b->charging = !g_ascii_strcasecmp(st, "charging");
+        b->discharging = !g_ascii_strcasecmp(st, "discharging");
+        b->watts = w;
+        return;
+    }
+
+    char pat[256];
+    snprintf(pat, sizeof pat, "%s/class/power_supply/BAT*", sysfs_root());
+    glob_t g;
+    if (glob(pat, 0, NULL, &g) != 0 || g.gl_pathc == 0) { globfree(&g); return; }
+    const char *bp = g.gl_pathv[0];
+    char path[320], status[32];
+    b->present = TRUE;
+
+    snprintf(path, sizeof path, "%s/capacity", bp);
+    long cap = read_long(path);
+    b->cap = cap < 0 ? 0 : (cap > 100 ? 100 : (int)cap);
+
+    snprintf(path, sizeof path, "%s/status", bp);
+    read_str(path, status, sizeof status);
+    b->charging = !strcmp(status, "Charging");
+    b->discharging = !strcmp(status, "Discharging");
+
+    snprintf(path, sizeof path, "%s/power_now", bp);
+    long p_now = read_long(path);
+    snprintf(path, sizeof path, "%s/energy_now", bp);
+    long e_now = read_long(path);
+    snprintf(path, sizeof path, "%s/energy_full", bp);
+    long e_full = read_long(path);
+
+    double watts = 0, energy = 0, full = 0;
+    if (p_now >= 0 && e_now >= 0) {
+        watts = p_now / 1e6;
+        energy = e_now / 1e6;
+        full = e_full >= 0 ? e_full / 1e6 : energy;
+    } else {
+        snprintf(path, sizeof path, "%s/current_now", bp);
+        long c = read_long(path);
+        snprintf(path, sizeof path, "%s/voltage_now", bp);
+        long v = read_long(path);
+        snprintf(path, sizeof path, "%s/charge_now", bp);
+        long q = read_long(path);
+        snprintf(path, sizeof path, "%s/charge_full", bp);
+        long qf = read_long(path);
+        if (c > 0 && v > 0) {
+            double volts = v / 1e6;
+            watts = (c / 1e6) * volts;
+            energy = (q > 0 ? q / 1e6 : 0) * volts;
+            full = (qf > 0 ? qf / 1e6 : 0) * volts;
+        }
+    }
+    globfree(&g);
+
+    b->watts = watts;
+    if (watts > 0.1) {
+        double hrs = b->discharging ? energy / watts : (full - energy) / watts;
+        if (hrs < 0) hrs = 0;
+        if (hrs > 99) hrs = 99;
+        int h = (int)hrs, m = (int)((hrs - h) * 60);
+        snprintf(b->rem, sizeof b->rem, "%d:%02d", h, m);
+    }
+}
+
+/* ================================================================== */
+/* CPU temperature: find the package sensor instead of hard-coding     */
+/* hwmonN (that number changes between boots)                          */
+/* ================================================================== */
+static char temp_file[512];
+static gboolean temp_tried = FALSE;
+
+static void temp_discover(void) {
+    temp_tried = TRUE;
+    temp_file[0] = '\0';
+
+    char *forced = cfg_str("indicator", "temp_path", NULL);
+    if (forced && *forced && g_file_test(forced, G_FILE_TEST_EXISTS)) {
+        snprintf(temp_file, sizeof temp_file, "%s", forced);
+        g_free(forced);
+        return;
+    }
+    g_free(forced);
+
+    static const char *const names[] = { "coretemp", "k10temp", "zenpower", "cpu_thermal", NULL };
+    static const char *const labels[] = { "Package id 0", "Tdie", "Tctl", "CPU", NULL };
+    int best = 99;
+    char pat[256];
+    snprintf(pat, sizeof pat, "%s/class/hwmon/hwmon*", sysfs_root());
+    glob_t g;
+    if (glob(pat, 0, NULL, &g) == 0) {
+        for (size_t i = 0; i < g.gl_pathc; i++) {
+            char path[400], name[64];
+            snprintf(path, sizeof path, "%s/name", g.gl_pathv[i]);
+            read_str(path, name, sizeof name);
+            int pri = -1;
+            for (int n = 0; names[n]; n++) if (!strcmp(name, names[n])) pri = n;
+            if (pri < 0 || pri >= best) continue;
+
+            /* prefer the package/die label, else temp1 */
+            char chosen[400] = "";
+            for (int l = 0; labels[l] && !chosen[0]; l++)
+                for (int t = 1; t <= 16; t++) {
+                    char lp[400], lab[64];
+                    snprintf(lp, sizeof lp, "%s/temp%d_label", g.gl_pathv[i], t);
+                    read_str(lp, lab, sizeof lab);
+                    if (!strcmp(lab, labels[l])) {
+                        snprintf(chosen, sizeof chosen, "%s/temp%d_input", g.gl_pathv[i], t);
+                        break;
+                    }
+                }
+            if (!chosen[0]) snprintf(chosen, sizeof chosen, "%s/temp1_input", g.gl_pathv[i]);
+            if (read_long(chosen) >= 0) {
+                snprintf(temp_file, sizeof temp_file, "%s", chosen);
+                best = pri;
+            }
+        }
+    }
+    globfree(&g);
+    if (temp_file[0]) return;
+
+    /* fallback: thermal zones (x86_pkg_temp, then anything) */
+    snprintf(pat, sizeof pat, "%s/class/thermal/thermal_zone*", sysfs_root());
+    if (glob(pat, 0, NULL, &g) == 0) {
+        for (size_t i = 0; i < g.gl_pathc; i++) {
+            char path[400], type[64];
+            snprintf(path, sizeof path, "%s/type", g.gl_pathv[i]);
+            read_str(path, type, sizeof type);
+            snprintf(path, sizeof path, "%s/temp", g.gl_pathv[i]);
+            if (read_long(path) < 0) continue;
+            if (!strcmp(type, "x86_pkg_temp")) { snprintf(temp_file, sizeof temp_file, "%s", path); break; }
+            if (!temp_file[0]) snprintf(temp_file, sizeof temp_file, "%s", path);
+        }
+    }
+    globfree(&g);
+}
+
+const char *temp_sensor_path(void) {
+    if (!temp_tried) temp_discover();
+    return temp_file;
+}
+
+int temp_read(void) {
+    if (!temp_tried) temp_discover();
+    if (!temp_file[0]) return -1;
+    long v = read_long(temp_file);
+    if (v < 0) { temp_tried = FALSE; return -1; }    /* sensor vanished (resume?): rediscover next time */
+    int c = (int)(v / 1000);
+    return c > 99 ? 99 : c;
+}
+
+/* ================================================================== */
+/* CPU usage and network speed (deltas since the previous call)        */
+/* ================================================================== */
+int cpu_read(void) {
+    static unsigned long long pt = 0, pi = 0;
+    FILE *f = fopen("/proc/stat", "r");
+    if (!f) return 0;
+    unsigned long long u = 0, n = 0, s = 0, i = 0, w = 0, irq = 0, sirq = 0, st = 0;
+    int c = fscanf(f, "cpu %llu %llu %llu %llu %llu %llu %llu %llu", &u, &n, &s, &i, &w, &irq, &sirq, &st);
+    fclose(f);
+    if (c < 4) return 0;
+    unsigned long long total = u + n + s + i + w + irq + sirq + st, idle = i + w;
+    unsigned long long dt = total - pt, di = idle - pi;
+    pt = total; pi = idle;
+    if (dt == 0 || di > dt) return 0;
+    int pct = (int)(100.0 * (double)(dt - di) / (double)dt + 0.5);
+    return pct > 99 ? 99 : pct;
+}
+
+static void net_bytes(unsigned long long *rx, unsigned long long *tx) {
+    *rx = 0; *tx = 0;
+    FILE *f = fopen("/proc/net/dev", "r");
+    if (!f) return;
+    char line[512], iface[64];
+    unsigned long long r, t, d;
+    if (!fgets(line, sizeof line, f) || !fgets(line, sizeof line, f)) { fclose(f); return; }
+    while (fgets(line, sizeof line, f)) {
+        if (sscanf(line, " %63[^:]: %llu %llu %llu %llu %llu %llu %llu %llu %llu",
+                   iface, &r, &d, &d, &d, &d, &d, &d, &d, &t) == 10) {
+            if (!strcmp(iface, "lo") || !strncmp(iface, "docker", 6) || !strncmp(iface, "veth", 4) ||
+                !strncmp(iface, "br-", 3) || !strncmp(iface, "virbr", 5)) continue;
+            *rx += r; *tx += t;
+        }
+    }
+    fclose(f);
+}
+
+void net_read(double *down, double *up) {
+    static unsigned long long prx = 0, ptx = 0;
+    static gint64 pt = 0;
+    unsigned long long rx, tx;
+    net_bytes(&rx, &tx);
+    gint64 now = g_get_monotonic_time();
+    double dt = pt ? (now - pt) / 1e6 : 0;
+    *down = (dt > 0.01 && rx >= prx) ? (rx - prx) / dt : 0;     /* counters can shrink when a link vanishes */
+    *up   = (dt > 0.01 && tx >= ptx) ? (tx - ptx) / dt : 0;
+    prx = rx; ptx = tx; pt = now;
+}
+
+/* Fixed 8 chars: 4-char number (max 3 digits) + 4-char unit. */
+void fmt_speed(double bps, char *out, size_t len) {
+    static const char *const units[] = { " B/s", "KB/s", "MB/s", "GB/s" };
+    int u = 0;
+    double v = bps;
+    while (v >= 999.5 && u < 3) { v /= 1024.0; u++; }
+    char num[16];
+    if (u == 0)         snprintf(num, sizeof num, "%.0f", v);
+    else if (v < 9.995) snprintf(num, sizeof num, "%.2f", v);
+    else if (v < 99.95) snprintf(num, sizeof num, "%.1f", v);
+    else                snprintf(num, sizeof num, "%.0f", v);
+    snprintf(out, len, "%4s%s", num, units[u]);
+}
