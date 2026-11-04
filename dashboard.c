@@ -157,7 +157,7 @@ static GtkWidget *create_chart(HistMetric metric, const char *name, int def_sec,
     gtk_widget_set_name(w, name);
     gtk_style_context_add_class(gtk_widget_get_style_context(w), "chart");
     gtk_widget_set_size_request(w, -1, h);
-    g_signal_connect_data(w, "draw", G_CALLBACK(chart_draw), ci, (GClosureNotify)g_free, 0);
+    g_signal_connect_data(w, "draw", G_CALLBACK(chart_draw), ci, free_cmd, 0);
     return w;
 }
 
