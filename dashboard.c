@@ -493,7 +493,7 @@ int dashboard_run(gboolean spawned) {
         double card_alpha = cfg_dbl("dashboard", "card_alpha", -1.0);
         if (card_alpha >= 0.0) {
             char card_css[128];
-            snprintf(card_css, sizeof card_css, " .card { background-color: alpha(@foreground, %.2f); }", card_alpha);
+            snprintf(card_css, sizeof card_css, " .card { background-color: alpha(@background, %.2f); }", card_alpha);
             g_strlcat(css_str, card_css, sizeof(css_str));
         }
 
