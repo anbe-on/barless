@@ -3,7 +3,7 @@
  * Shows: HH:MM   CPU temp   battery square (+ direction arrow + watts).
  * Also watches Hyprland and starts/stops the dashboard process when the active
  * workspace has no windows. */
-#include "panelless.h"
+#include "barless.h"
 #include <glib-unix.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -24,6 +24,7 @@ static int radius;
 static int bat_mid, bat_low, temp_warm, temp_hot;
 static gboolean show_temp, show_watts, bat_square, bat_arrow;
 static gboolean hide_on_empty = FALSE;
+static char *bat_col_ok = NULL, *bat_col_mid = NULL, *bat_col_low = NULL;
 
 /* ================================================================== */
 /* Hyprland IPC (plain unix sockets, no deps)                          */
@@ -124,7 +125,7 @@ static void dash_start(void) {
     GError *e = NULL;
     dash = g_subprocess_newv(argv, G_SUBPROCESS_FLAGS_NONE, &e);
     if (!dash) {
-        g_printerr("panelless: cannot start dashboard: %s\n", e->message);
+        g_printerr("barless: cannot start dashboard: %s\n", e->message);
         g_error_free(e);
     } else {
         g_subprocess_wait_async(dash, NULL, dash_exited, NULL);
@@ -193,7 +194,7 @@ static gboolean on_hypr_events(gint fd, GIOCondition cond, gpointer d) {
 static void hypr_watch_start(void) {
     int fd = hypr_connect(".socket2.sock");
     if (fd < 0) {
-        g_printerr("panelless: Hyprland event socket not available: dashboard will not auto-open\n");
+        g_printerr("barless: Hyprland event socket not available: dashboard will not auto-open\n");
         return;
     }
     evbuf = g_string_new(NULL);
@@ -303,11 +304,18 @@ static gboolean sensor_tick(gpointer d) {
     set_state_class(watts_l, cls);
     if (b.cap != bat_cap) { bat_cap = b.cap; }
     gtk_widget_queue_draw(bat_da);
+    gtk_widget_queue_draw(arrow_l);
+    gtk_widget_queue_draw(watts_l);
 
     /* direction of power flow: up = charging, down = discharging, nothing when idle/full */
     /* in arrow-only style the arrow is the whole battery indicator, so idle/full shows a dot */
     const char *arrow = b.charging ? "\xe2\x96\xb2" : b.discharging ? "\xe2\x96\xbc" : bat_arrow ? "\xe2\x97\x8f" : "";
-    if (strcmp(arrow, gtk_label_get_text(GTK_LABEL(arrow_l)))) gtk_label_set_text(GTK_LABEL(arrow_l), arrow);
+    const char *col = !strcmp(cls, "low") ? (bat_col_low ? bat_col_low : "#a55555") :
+                      !strcmp(cls, "mid") ? (bat_col_mid ? bat_col_mid : "#8f7a3a") :
+                                            (bat_col_ok ? bat_col_ok : "#4f7a52");
+    char markup[128];
+    snprintf(markup, sizeof markup, "<span foreground=\"%s\">%s</span>", col, arrow);
+    gtk_label_set_markup(GTK_LABEL(arrow_l), markup);
     gtk_widget_set_visible(arrow_l, arrow[0] != '\0');
 
     char w[24];
@@ -433,32 +441,67 @@ int indicator_run(void) {
     track_alpha = cfg_dbl("indicator", "track_alpha", 0.25);
     radius = cfg_int("indicator", "radius", 0);
 
-    /* Background transparency / color from config */
+    bat_col_ok = cfg_str("indicator", "battery_color_ok", "#4f7a52");
+    bat_col_mid = cfg_str("indicator", "battery_color_mid", "#8f7a3a");
+    bat_col_low = cfg_str("indicator", "battery_color_low", "#a55555");
+
+    /* Background transparency, color, and battery colors from config */
     {
         char *bg = cfg_str("indicator", "bg", NULL);
         if (!bg) bg = cfg_str("indicator", "background", NULL);
-        char css_str[256];
-        if (bg && *bg) {
-            snprintf(css_str, sizeof css_str, "window#indicator { background-color: %s; }", bg);
-        } else {
-            double alpha = cfg_dbl("indicator", "bg_alpha", 0.0);
-            snprintf(css_str, sizeof css_str, "window#indicator { background-color: rgba(22, 22, 29, %.2f); }", alpha);
+        double bg_alpha = cfg_dbl("indicator", "bg_alpha", -1.0);
+        int rad = cfg_int("indicator", "radius", 0);
+
+        char css_str[1024];
+        css_str[0] = '\0';
+
+        if (bg && *bg && g_ascii_strcasecmp(bg, "transparent") != 0) {
+            if (bg_alpha >= 0.0) {
+                snprintf(css_str, sizeof css_str,
+                    "window#indicator { background-color: transparent; }\n"
+                    "#indicator box { background-color: alpha(%s, %.2f); border-radius: %dpx; }\n",
+                    bg, bg_alpha, rad);
+            } else {
+                snprintf(css_str, sizeof css_str,
+                    "window#indicator { background-color: transparent; }\n"
+                    "#indicator box { background-color: %s; border-radius: %dpx; }\n",
+                    bg, rad);
+            }
+        } else if (bg_alpha > 0.0) {
+            snprintf(css_str, sizeof css_str,
+                "window#indicator { background-color: transparent; }\n"
+                "#indicator box { background-color: alpha(@foreground, %.2f); border-radius: %dpx; }\n",
+                bg_alpha, rad);
+        } else if (rad > 0) {
+            snprintf(css_str, sizeof css_str,
+                "window#indicator { background-color: transparent; }\n"
+                "#indicator box { border-radius: %dpx; }\n", rad);
         }
         g_free(bg);
+
+        /* Battery color CSS override so both box (#battery) and arrow (#arrow) respect colors */
+        char bat_css[512];
+        snprintf(bat_css, sizeof bat_css,
+            "#arrow, #indicator #arrow, #arrow.ok, #indicator #arrow.ok, #battery, #battery.ok { color: %s; }\n"
+            "#arrow.mid, #indicator #arrow.mid, #battery.mid { color: %s; }\n"
+            "#arrow.low, #indicator #arrow.low, #battery.low { color: %s; }\n",
+            bat_col_ok, bat_col_mid, bat_col_low);
+        g_strlcat(css_str, bat_css, sizeof(css_str));
+
         GtkCssProvider *bp = gtk_css_provider_new();
         gtk_css_provider_load_from_data(bp, css_str, -1, NULL);
         gtk_style_context_add_provider_for_screen(gdk_screen_get_default(), GTK_STYLE_PROVIDER(bp),
-                                                  GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+                                                  GTK_STYLE_PROVIDER_PRIORITY_USER + 10);
     }
 
     self_exe = g_file_read_link("/proc/self/exe", NULL);
-    if (!self_exe) self_exe = g_strdup("panelless");
+    if (!self_exe) self_exe = g_strdup("barless");
 
     win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_widget_set_name(win, "indicator");
     gtk_layer_init_for_window(GTK_WINDOW(win));
     gtk_layer_set_layer(GTK_WINDOW(win), GTK_LAYER_SHELL_LAYER_TOP);
-    gtk_layer_set_namespace(GTK_WINDOW(win), "panelless-indicator");
+    gtk_layer_set_namespace(GTK_WINDOW(win), "barless-indicator");
     gtk_layer_set_keyboard_mode(GTK_WINDOW(win), GTK_LAYER_SHELL_KEYBOARD_MODE_NONE);
     gtk_layer_set_anchor(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_TOP, TRUE);
     gtk_layer_set_anchor(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_RIGHT, TRUE);

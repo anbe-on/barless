@@ -1,5 +1,5 @@
 /* common.c - config file, CSS loading, sensor readers */
-#include "panelless.h"
+#include "barless.h"
 #include <glib/gstdio.h>
 #include <glob.h>
 #include <string.h>
@@ -15,7 +15,7 @@
 /* Default files (written on first run, never overwritten)             */
 /* ================================================================== */
 static const char DEFAULT_CONFIG[] =
-"# panelless config (key-file format). Restart panelless to apply changes.\n"
+"# barless config (key-file format). Restart barless to apply changes.\n"
 "# Fonts, colours and sizes live in style.css, not here.\n"
 "\n"
 "[indicator]\n"
@@ -39,13 +39,17 @@ static const char DEFAULT_CONFIG[] =
 "# battery states: .ok above battery_mid, .mid up to it, .low at/below battery_low\n"
 "battery_mid=50\n"
 "battery_low=20\n"
+"# battery state colors (optional hex or CSS color overrides)\n"
+"# battery_color_ok=#4f7a52\n"
+"# battery_color_mid=#8f7a3a\n"
+"# battery_color_low=#a55555\n"
 "# temperature states: .warm and .hot on #temp\n"
 "temp_warm=65\n"
 "temp_hot=85\n"
 "# unfilled part of the battery shape, 0..1\n"
 "track_alpha=0.25\n"
 "radius=0\n"
-"# optional: force one sensor file instead of auto-detect (see: panelless --info)\n"
+"# optional: force one sensor file instead of auto-detect (see: barless --info)\n"
 "# temp_path=/sys/devices/platform/coretemp.0/hwmon/hwmon5/temp1_input\n"
 "# hide indicator when active workspace has no windows and dashboard opens\n"
 "hide_on_empty=false\n"
@@ -147,7 +151,7 @@ static const char DEFAULT_CONFIG[] =
 "#terminal=true\n";
 
 static const char DEFAULT_CSS[] =
-"/* panelless style.css - edit freely, it reloads when you save (and on Omarchy theme change). */\n"
+"/* barless style.css - edit freely, it reloads when you save (and on Omarchy theme change). */\n"
 "\n"
 "/* Same colour file your waybar imports, so @foreground / @background follow the theme.\n"
 "   The two lines before it are only a fallback if that file is missing. */\n"
@@ -168,14 +172,15 @@ static const char DEFAULT_CSS[] =
 "#indicator #time { color: alpha(@foreground, 0.65); }\n"
 "\n"
 "/* the battery square: its colour is the state colour; size = min-width/min-height */\n"
-"#battery        { min-width: 11px; min-height: 11px; color: #4f7a52; }\n"
-"#battery.mid    { color: #8f7a3a; }\n"
-"#battery.low    { color: #a55555; }\n"
-"/* the same state class is also set on #arrow and #watts if you want them tinted */\n"
-"#indicator #arrow       { color: #4f7a52; }\n"
-"#indicator #arrow.mid   { color: #8f7a3a; }\n"
-"#indicator #arrow.low   { color: #a55555; }\n"
-"#watts.low { color: #a55555; }   /* uncomment/add .mid too if you want the watts tinted */\n"
+"#battery, #battery.ok                  { min-width: 11px; min-height: 11px; color: #4f7a52; }\n"
+"#battery.mid                           { color: #8f7a3a; }\n"
+"#battery.low                           { color: #a55555; }\n"
+"/* the arrow indicator glyph: */\n"
+"#arrow, #indicator #arrow, #arrow.ok, #indicator #arrow.ok { color: #4f7a52; }\n"
+"#arrow.mid, #indicator #arrow.mid                         { color: #8f7a3a; }\n"
+"#arrow.low, #indicator #arrow.low                         { color: #a55555; }\n"
+"#watts.mid, #indicator #watts.mid                         { color: #8f7a3a; }\n"
+"#watts.low, #indicator #watts.low                         { color: #a55555; }\n"
 "\n"
 "#temp.warm { color: #8f7a3a; }\n"
 "#temp.hot  { color: #a55555; }\n"
@@ -217,12 +222,23 @@ static const char DEFAULT_CSS[] =
 /* ================================================================== */
 const char *cfg_dir(void) {
     static char *d = NULL;
-    if (!d) d = g_build_filename(g_get_user_config_dir(), "panelless", NULL);
+    if (!d) {
+        char *bdir = g_build_filename(g_get_user_config_dir(), "barless", NULL);
+        char *pdir = g_build_filename(g_get_user_config_dir(), "panelless", NULL);
+        if (g_file_test(bdir, G_FILE_TEST_IS_DIR) || !g_file_test(pdir, G_FILE_TEST_IS_DIR)) {
+            d = bdir;
+            g_free(pdir);
+        } else {
+            d = pdir;
+            g_free(bdir);
+        }
+    }
     return d;
 }
 
 const char *sysfs_root(void) {
-    const char *r = g_getenv("PANELLESS_SYSFS");
+    const char *r = g_getenv("BARLESS_SYSFS");
+    if (!r || !*r) r = g_getenv("PANELLESS_SYSFS");
     return (r && *r) ? r : "/sys";
 }
 
@@ -247,7 +263,7 @@ void cfg_load(void) {
     char *p = g_build_filename(cfg_dir(), "config.ini", NULL);
     GError *e = NULL;
     if (!g_key_file_load_from_file(kf, p, G_KEY_FILE_NONE, &e)) {
-        g_printerr("panelless: %s: %s (using defaults)\n", p, e->message);
+        g_printerr("barless: %s: %s (using defaults)\n", p, e->message);
         g_error_free(e);
     }
     g_free(p);
@@ -297,7 +313,7 @@ static void css_load(void) {
     char *p = g_build_filename(cfg_dir(), "style.css", NULL);
     GError *e = NULL;
     if (!gtk_css_provider_load_from_path(css, p, &e)) {
-        g_printerr("panelless: %s: %s (using built-in style)\n", p, e->message);
+        g_printerr("barless: %s: %s (using built-in style)\n", p, e->message);
         g_error_free(e);
         gtk_css_provider_load_from_data(css, DEFAULT_CSS, -1, NULL);
     }
@@ -367,8 +383,9 @@ static void read_str(const char *path, char *buf, size_t len) {
 void bat_read(BatInfo *b) {
     memset(b, 0, sizeof(*b));
 
-    /* test hook: PANELLESS_FAKE_BAT="18 discharging 7.5"  (preview CSS states) */
-    const char *fake = g_getenv("PANELLESS_FAKE_BAT");
+    /* test hook: BARLESS_FAKE_BAT="18 discharging 7.5"  (preview CSS states) */
+    const char *fake = g_getenv("BARLESS_FAKE_BAT");
+    if (!fake || !*fake) fake = g_getenv("PANELLESS_FAKE_BAT");
     if (fake && *fake) {
         char st[32] = "discharging";
         int cap = 50;
@@ -618,7 +635,7 @@ static HistData *hist = NULL;
 void history_init(void) {
     if (hist) return;
     const char *runtimedir = g_get_user_runtime_dir();
-    char *dir = g_build_filename(runtimedir ? runtimedir : "/tmp", "panelless", NULL);
+    char *dir = g_build_filename(runtimedir ? runtimedir : "/tmp", "barless", NULL);
     g_mkdir_with_parents(dir, 0700);
     char *path = g_build_filename(dir, "history.bin", NULL);
     g_free(dir);

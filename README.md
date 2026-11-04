@@ -1,4 +1,4 @@
-# panelless
+# barless
 
 An OLED-friendly, always-on minimal indicator and empty-workspace dashboard for Linux and Hyprland, built with GTK 3 and gtk-layer-shell.
 
@@ -64,13 +64,13 @@ sudo dnf install gcc make gtk3-devel gtk-layer-shell-devel pkgconf-pkg-config
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/panelless.git
-cd panelless
+git clone https://github.com/your-username/barless.git
+cd barless
 
 # Build the executable
 make
 
-# Install to ~/.local/bin/panelless
+# Install to ~/.local/bin/barless
 make install
 ```
 
@@ -79,24 +79,24 @@ make install
 ## Usage
 
 ```bash
-# Run panelless (indicator daemon + auto-dashboard on empty workspaces)
-panelless
+# Run barless (indicator daemon + auto-dashboard on empty workspaces)
+barless
 
 # Run only the dashboard (useful for previewing design tweaks)
-panelless --dashboard
+barless --dashboard
 
 # Print detected hardware sensors, battery, and Hyprland IPC status
-panelless --info
+barless --info
 
 # Show help options
-panelless --help
+barless --help
 ```
 
 ### Testing & Simulation
 
 You can preview battery states and CSS color transitions without draining hardware battery:
 ```bash
-PANELLESS_FAKE_BAT="18 discharging 7.5" panelless
+BARLESS_FAKE_BAT="18 discharging 7.5" barless
 ```
 Format: `"<capacity 0-100> <charging|discharging|idle> <watts>"`
 
@@ -104,7 +104,7 @@ Format: `"<capacity 0-100> <charging|discharging|idle> <watts>"`
 
 ## Configuration Guide
 
-Configuration files are located at `~/.config/panelless/`:
+Configuration files are located at `~/.config/barless/` (automatically falls back to `~/.config/panelless/` if already present):
 - `config.ini`: Layout, sensor intervals, toggles, and button actions.
 - `style.css`: Colors, fonts, margins, and visual styles (hot-reloaded on save).
 - `position.ini`: Auto-generated when middle-click dragging the dashboard to save its screen position.
@@ -113,7 +113,7 @@ Default configuration files are created automatically on first run if they do no
 
 ### 1. Configuring Stats (`stats = ...`)
 
-In `~/.config/panelless/config.ini` under `[dashboard]`:
+In `~/.config/barless/config.ini` under `[dashboard]`:
 ```ini
 [dashboard]
 # Which stats to show and in what order (comma-separated: cpu, temp, net, battery).
@@ -129,9 +129,9 @@ Examples:
 
 ### 2. Configuring Universal Graphs
 
-Panelless supports line charts under any metric. Historical values are recorded continuously every second in a shared memory ring buffer (`$XDG_RUNTIME_DIR/panelless/history.bin`), ensuring **graphs keep track of values and do not reset** when switching workspaces or reopening the dashboard.
+Barless supports line charts under any metric. Historical values are recorded continuously every second in a shared memory ring buffer (`$XDG_RUNTIME_DIR/barless/history.bin`), ensuring **graphs keep track of values and do not reset** when switching workspaces or reopening the dashboard.
 
-In `~/.config/panelless/config.ini` under `[dashboard]`:
+In `~/.config/barless/config.ini` under `[dashboard]`:
 ```ini
 [dashboard]
 # Toggle line charts under stats:
@@ -174,7 +174,7 @@ tray_align=center       # Tray icons alignment: center (default), left, or right
 
 ### 3. Indicator Configuration & Triangle Battery
 
-In `~/.config/panelless/config.ini` under `[indicator]`:
+In `~/.config/barless/config.ini` under `[indicator]`:
 ```ini
 [indicator]
 # Position from top-right corner in pixels
@@ -207,6 +207,11 @@ battery_style=arrow
 battery_mid=50
 battery_low=20
 
+# Optional custom battery state colors (hex or css colors):
+# battery_color_ok=#4f7a52
+# battery_color_mid=#8f7a3a
+# battery_color_low=#a55555
+
 # Temperature thresholds (maps to CSS classes .warm and .hot on #temp)
 temp_warm=65
 temp_hot=85
@@ -223,8 +228,8 @@ hide_on_empty=false
 
 # Window background color or transparency:
 bg=transparent
-# Or specify alpha directly:
-# bg_alpha=0.0
+# Or specify alpha directly (0.0 to 1.0; tints the indicator pill with foreground or custom color):
+# bg_alpha=0.1
 ```
 
 ---
@@ -325,7 +330,7 @@ Options per button:
 
 ### 6. Styling Reference (`style.css`)
 
-CSS styles are hot-reloaded automatically whenever you save `~/.config/panelless/style.css`.
+CSS styles are hot-reloaded automatically whenever you save `~/.config/barless/style.css`.
 
 Key CSS selectors:
 - `#indicator`: Top indicator window.

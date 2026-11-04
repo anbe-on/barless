@@ -7,7 +7,7 @@
  * Host side (only when a box is given): renders the items as icons. Only the
  * dashboard process does this, so no icon theme or pixbuf is loaded in the
  * always-on process. */
-#include "panelless.h"
+#include "barless.h"
 #include <string.h>
 #include <unistd.h>
 

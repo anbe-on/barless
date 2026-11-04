@@ -1,18 +1,18 @@
-/* panelless - always-on OLED-friendly indicator + empty-workspace dashboard.
+/* barless - always-on OLED-friendly indicator + empty-workspace dashboard.
  *
- *   panelless               run the indicator (and auto-start the dashboard on empty workspaces)
- *   panelless --dashboard   run only the dashboard (for designing it)
- *   panelless --info        print which sensors/sockets it found, then exit
+ *   barless               run the indicator (and auto-start the dashboard on empty workspaces)
+ *   barless --dashboard   run only the dashboard (for designing it)
+ *   barless --info        print which sensors/sockets it found, then exit
  *
  * Preview the battery colours without draining the battery:
- *   PANELLESS_FAKE_BAT="18 discharging 7.5" panelless      (capacity, charging|discharging|idle, watts)
+ *   BARLESS_FAKE_BAT="18 discharging 7.5" barless      (capacity, charging|discharging|idle, watts)
  */
-#include "panelless.h"
+#include "barless.h"
 #include <string.h>
 #include <stdio.h>
 
 static void usage(void) {
-    g_print("usage: panelless [--dashboard] [--info] [--help]\n"
+    g_print("usage: barless [--dashboard] [--info] [--help]\n"
             "  config: %s/config.ini   style: %s/style.css\n", cfg_dir(), cfg_dir());
 }
 

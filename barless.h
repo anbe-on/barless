@@ -1,11 +1,11 @@
-#ifndef PANELLESS_H
-#define PANELLESS_H
+#ifndef BARLESS_H
+#define BARLESS_H
 
 #include <gtk/gtk.h>
 #include <gtk-layer-shell/gtk-layer-shell.h>
 
 /* ---- common.c: config, css, sensor readers ------------------------- */
-const char *cfg_dir(void);                       /* ~/.config/panelless */
+const char *cfg_dir(void);                       /* ~/.config/barless */
 void     cfg_load(void);                         /* creates default files on first run */
 int      cfg_int (const char *grp, const char *key, int def);
 double   cfg_dbl (const char *grp, const char *key, double def);

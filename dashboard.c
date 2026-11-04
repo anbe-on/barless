@@ -1,17 +1,17 @@
 /* dashboard.c - the empty-workspace dashboard. THIS IS YOUR PLAYGROUND.
  *
- * It runs as its own process (panelless --dashboard): the always-on indicator
+ * It runs as its own process (barless --dashboard): the always-on indicator
  * starts it when the active Hyprland workspace has no windows and stops it
  * when a window appears, so everything here costs nothing while you work.
  *
  * To iterate on the design without touching the indicator:
- *     make && ./panelless --dashboard
+ *     make && ./barless --dashboard
  * Styling is style.css (reloads on save). Buttons come from config.ini.
  *
  * Everything lives in ONE container (the GtkBox passed to build_dashboard()).
  * Add widgets there. Give them a name (#id) or a class (.class) and style them
  * in style.css. */
-#include "panelless.h"
+#include "barless.h"
 #include <glib-unix.h>
 #include <string.h>
 #include <time.h>
@@ -47,7 +47,7 @@ static void on_button_clicked(GtkButton *b, gpointer cmd) {
     (void)b;
     GError *e = NULL;
     if (!g_spawn_command_line_async((const char *)cmd, &e)) {
-        g_printerr("panelless: cannot run '%s': %s\n", (const char *)cmd, e->message);
+        g_printerr("barless: cannot run '%s': %s\n", (const char *)cmd, e->message);
         g_error_free(e);
     }
 }
@@ -323,6 +323,17 @@ static gboolean dash_tick(gpointer d) {
     else
         snprintf(b, sizeof b, "%d%%", bat.cap);
     gtk_label_set_text(GTK_LABEL(w_bat), b);
+
+    if (w_bat) {
+        GtkStyleContext *sc = gtk_widget_get_style_context(w_bat);
+        gtk_style_context_remove_class(sc, "ok");
+        gtk_style_context_remove_class(sc, "mid");
+        gtk_style_context_remove_class(sc, "low");
+        if (bat.present) {
+            const char *bcls = bat.cap <= 20 ? "low" : bat.cap <= 50 ? "mid" : "ok";
+            gtk_style_context_add_class(sc, bcls);
+        }
+    }
     return G_SOURCE_CONTINUE;
 }
 
@@ -462,12 +473,20 @@ int dashboard_run(gboolean spawned) {
     {
         char *bg = cfg_str("dashboard", "bg", NULL);
         if (!bg) bg = cfg_str("dashboard", "background", NULL);
+        double bg_alpha = cfg_dbl("dashboard", "bg_alpha", -1.0);
         char css_str[512];
-        if (bg && *bg) {
-            snprintf(css_str, sizeof css_str, "window#dashboard { background-color: %s; }", bg);
+        css_str[0] = '\0';
+
+        if (bg && *bg && g_ascii_strcasecmp(bg, "transparent") != 0) {
+            if (bg_alpha >= 0.0) {
+                snprintf(css_str, sizeof css_str, "window#dashboard { background-color: alpha(%s, %.2f); }", bg, bg_alpha);
+            } else {
+                snprintf(css_str, sizeof css_str, "window#dashboard { background-color: %s; }", bg);
+            }
+        } else if (bg_alpha > 0.0) {
+            snprintf(css_str, sizeof css_str, "window#dashboard { background-color: alpha(@foreground, %.2f); }", bg_alpha);
         } else {
-            double alpha = cfg_dbl("dashboard", "bg_alpha", 0.0);
-            snprintf(css_str, sizeof css_str, "window#dashboard { background-color: rgba(22, 22, 29, %.2f); }", alpha);
+            snprintf(css_str, sizeof css_str, "window#dashboard { background-color: transparent; }");
         }
         g_free(bg);
 
@@ -481,14 +500,14 @@ int dashboard_run(gboolean spawned) {
         GtkCssProvider *bp = gtk_css_provider_new();
         gtk_css_provider_load_from_data(bp, css_str, -1, NULL);
         gtk_style_context_add_provider_for_screen(gdk_screen_get_default(), GTK_STYLE_PROVIDER(bp),
-                                                  GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+                                                  GTK_STYLE_PROVIDER_PRIORITY_USER + 10);
     }
 
     GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_widget_set_name(win, "dashboard");
     gtk_layer_init_for_window(GTK_WINDOW(win));
     gtk_layer_set_layer(GTK_WINDOW(win), GTK_LAYER_SHELL_LAYER_BOTTOM);
-    gtk_layer_set_namespace(GTK_WINDOW(win), "panelless-dashboard");
+    gtk_layer_set_namespace(GTK_WINDOW(win), "barless-dashboard");
     gtk_layer_set_keyboard_mode(GTK_WINDOW(win), GTK_LAYER_SHELL_KEYBOARD_MODE_NONE);
     gtk_layer_set_anchor(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_TOP, TRUE);
     gtk_layer_set_anchor(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_BOTTOM, TRUE);
