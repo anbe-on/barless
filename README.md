@@ -185,7 +185,7 @@ show_temp=true
 show_watts=true
 
 # Battery Look:
-# - arrow    (default): colored level meter rendered directly on the up/down triangle;
+# - arrow    (default): compact directional arrow colored by charge level;
 #                       ▲ = charging, ▼ = discharging, ● = full/idle on AC.
 # - square   : classic battery level square.
 # - both     : square meter + separate directional arrow glyph.

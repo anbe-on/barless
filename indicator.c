@@ -19,11 +19,10 @@ static gboolean dodge_on, dodged = FALSE;
 static int dodge_ms;
 static guint dodge_id = 0;
 static int bat_cap = 0;
-static gboolean bat_charging = FALSE, bat_discharging = FALSE;
 static double track_alpha;
 static int radius;
 static int bat_mid, bat_low, temp_warm, temp_hot;
-static gboolean show_temp, show_watts, bat_square, bat_arrow, bat_both;
+static gboolean show_temp, show_watts, bat_square, bat_arrow;
 static gboolean hide_on_empty = FALSE;
 
 /* ================================================================== */
@@ -230,29 +229,7 @@ static void rrect(cairo_t *cr, double x, double y, double w, double h, double r)
     cairo_close_path(cr);
 }
 
-static void draw_shape_path(cairo_t *cr, int shape, double x, double y, double s) {
-    if (shape == 1) { /* UP triangle (charging) */
-        cairo_new_sub_path(cr);
-        cairo_move_to(cr, x + s / 2.0, y);
-        cairo_line_to(cr, x + s, y + s);
-        cairo_line_to(cr, x, y + s);
-        cairo_close_path(cr);
-    } else if (shape == 2) { /* DOWN triangle (discharging) */
-        cairo_new_sub_path(cr);
-        cairo_move_to(cr, x, y);
-        cairo_line_to(cr, x + s, y);
-        cairo_line_to(cr, x + s / 2.0, y + s);
-        cairo_close_path(cr);
-    } else if (shape == 3) { /* CIRCLE (idle / AC full) */
-        cairo_new_sub_path(cr);
-        cairo_arc(cr, x + s / 2.0, y + s / 2.0, s / 2.0, 0, 2 * G_PI);
-    } else { /* SQUARE */
-        rrect(cr, x, y, s, s, radius);
-    }
-}
-
-/* The battery indicator: triangle up (charging), triangle down (discharging), circle (idle)
- * or square. Filled from bottom up to bat_cap %. Colour comes from CSS `color`. */
+/* The battery square: dim track + fill from the bottom. Colour comes from CSS `color`. */
 static gboolean bat_draw(GtkWidget *w, cairo_t *cr, gpointer d) {
     (void)d;
     double W = gtk_widget_get_allocated_width(w), H = gtk_widget_get_allocated_height(w);
@@ -261,23 +238,16 @@ static gboolean bat_draw(GtkWidget *w, cairo_t *cr, gpointer d) {
     GdkRGBA c;
     gtk_style_context_get_color(sc, gtk_style_context_get_state(sc), &c);
 
-    int shape = 0;
-    if (!bat_both && bat_arrow) {
-        if (bat_charging) shape = 1;
-        else if (bat_discharging) shape = 2;
-        else shape = 3;
-    }
-
-    draw_shape_path(cr, shape, x, y, s);
+    rrect(cr, x, y, s, s, radius);
     cairo_set_source_rgba(cr, c.red, c.green, c.blue, c.alpha * track_alpha);
     cairo_fill(cr);
 
     double fh = s * bat_cap / 100.0;
     if (fh > 0.5) {
         cairo_save(cr);
-        cairo_rectangle(cr, x - 1, y + s - fh, s + 2, fh + 1);
+        cairo_rectangle(cr, x, y + s - fh, s, fh);
         cairo_clip(cr);
-        draw_shape_path(cr, shape, x, y, s);
+        rrect(cr, x, y, s, s, radius);
         cairo_set_source_rgba(cr, c.red, c.green, c.blue, c.alpha);
         cairo_fill(cr);
         cairo_restore(cr);
@@ -321,31 +291,24 @@ static gboolean sensor_tick(gpointer d) {
 
     BatInfo b;
     bat_read(&b);
-    gtk_widget_set_visible(bat_da, b.present && (bat_square || bat_arrow));
+    gtk_widget_set_visible(bat_da, b.present && bat_square);
     if (!b.present) {
         gtk_widget_set_visible(arrow_l, FALSE);
         gtk_widget_set_visible(watts_l, FALSE);
         return G_SOURCE_CONTINUE;
     }
-    bat_charging = b.charging;
-    bat_discharging = b.discharging;
-    bat_cap = b.cap;
-
     const char *cls = b.cap <= bat_low ? "low" : b.cap <= bat_mid ? "mid" : "ok";
     set_state_class(bat_da, cls);
     set_state_class(arrow_l, cls);
     set_state_class(watts_l, cls);
+    if (b.cap != bat_cap) { bat_cap = b.cap; }
     gtk_widget_queue_draw(bat_da);
 
-    /* direction of power flow: in arrow mode, bat_da IS the triangle.
-     * in bat_both mode, arrow_l is a separate label */
-    if (bat_both) {
-        const char *arrow = b.charging ? "\xe2\x96\xb2" : b.discharging ? "\xe2\x96\xbc" : "\xe2\x97\x8f";
-        if (strcmp(arrow, gtk_label_get_text(GTK_LABEL(arrow_l)))) gtk_label_set_text(GTK_LABEL(arrow_l), arrow);
-        gtk_widget_set_visible(arrow_l, TRUE);
-    } else {
-        gtk_widget_set_visible(arrow_l, FALSE);
-    }
+    /* direction of power flow: up = charging, down = discharging, nothing when idle/full */
+    /* in arrow-only style the arrow is the whole battery indicator, so idle/full shows a dot */
+    const char *arrow = b.charging ? "\xe2\x96\xb2" : b.discharging ? "\xe2\x96\xbc" : bat_arrow ? "\xe2\x97\x8f" : "";
+    if (strcmp(arrow, gtk_label_get_text(GTK_LABEL(arrow_l)))) gtk_label_set_text(GTK_LABEL(arrow_l), arrow);
+    gtk_widget_set_visible(arrow_l, arrow[0] != '\0');
 
     char w[24];
     snprintf(w, sizeof w, "%.1fW", b.watts);
@@ -359,6 +322,7 @@ static gboolean sensor_tick(gpointer d) {
         snprintf(tip, sizeof tip, "Battery: %d%% discharging (%.1fW%s%s)", b.cap, b.watts, b.rem[0] ? ", " : "", b.rem);
     else
         snprintf(tip, sizeof tip, "Battery: %d%% (idle/full)", b.cap);
+    gtk_widget_set_tooltip_text(arrow_l, tip);
     gtk_widget_set_tooltip_text(bat_da, tip);
 
     return G_SOURCE_CONTINUE;
@@ -455,10 +419,9 @@ int indicator_run(void) {
     dodge_ms = MAX(200, cfg_int("indicator", "dodge_ms", 1200));
     show_temp = cfg_bool("indicator", "show_temp", TRUE);
     show_watts = cfg_bool("indicator", "show_watts", TRUE);
-    {   /* battery_style: arrow (default: up/down triangle colored by charge level) | square | both */
+    {   /* battery_style: arrow (default, compact: the arrow carries the colour) | square | both */
         char *bs = cfg_str("indicator", "battery_style", "arrow");
-        bat_both = !g_ascii_strcasecmp(bs, "both");
-        bat_square = !g_ascii_strcasecmp(bs, "square") || bat_both;
+        bat_square = !g_ascii_strcasecmp(bs, "square") || !g_ascii_strcasecmp(bs, "both");
         bat_arrow = g_ascii_strcasecmp(bs, "square") != 0;
         g_free(bs);
     }
