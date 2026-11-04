@@ -41,15 +41,25 @@ static void notify_changed(void) {
     int n = 0;
     for (GList *l = tray_items; l; l = l->next) {
         TrayItem *t = (TrayItem *)l->data;
-        if (t->btn && gtk_widget_get_visible(t->btn)) n++;
+        if (!t->gone && t->btn && gtk_widget_get_visible(t->btn)) n++;
     }
     changed_cb(n);
+}
+
+static void item_destroy_btn(TrayItem *t) {
+    if (!t->btn) return;
+    GtkWidget *parent = gtk_widget_get_parent(t->btn);
+    if (parent) gtk_container_remove(GTK_CONTAINER(parent), t->btn);
+    gtk_widget_destroy(t->btn);
+    g_object_unref(t->btn);
+    t->btn = NULL;
 }
 
 static TrayItem *item_ref(TrayItem *t) { t->refs++; return t; }
 static void item_unref(gpointer p) {
     TrayItem *t = p;
     if (--t->refs > 0) return;
+    item_destroy_btn(t);
     g_free(t->id); g_free(t->service); g_free(t->path);
     g_free(t->icon_name); g_free(t->theme_path); g_free(t->title); g_free(t->status); g_free(t->menu_path);
     if (t->src) g_object_unref(t->src);
@@ -114,7 +124,12 @@ static void refresh_icon(TrayItem *t) {
     if (pb) g_object_unref(pb);
     if (t->btn) {
         gtk_widget_set_tooltip_text(t->btn, t->title);
-        gtk_widget_set_visible(t->btn, g_strcmp0(t->status, "Passive") != 0);
+        gboolean vis = g_strcmp0(t->status, "Passive") != 0;
+        gtk_widget_set_visible(t->btn, vis);
+        if (vis) {
+            gtk_widget_show(t->img);
+            gtk_widget_show(t->btn);
+        }
     }
 }
 
@@ -304,6 +319,7 @@ static void item_add(const char *reg) {
     t->path    = slash ? g_strdup(slash) : g_strdup("/StatusNotifierItem");
 
     t->btn = gtk_button_new();
+    g_object_ref_sink(t->btn);
     gtk_style_context_add_class(gtk_widget_get_style_context(t->btn), "action");
     gtk_style_context_add_class(gtk_widget_get_style_context(t->btn), "tray-btn");
     t->img = gtk_image_new();
@@ -311,7 +327,7 @@ static void item_add(const char *reg) {
     gtk_widget_set_valign(t->img, GTK_ALIGN_CENTER);
     gtk_container_add(GTK_CONTAINER(t->btn), t->img);
 
-    gtk_widget_add_events(t->btn, GDK_BUTTON_PRESS_MASK | GDK_SCROLL_MASK);
+    gtk_widget_add_events(t->btn, GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_SCROLL_MASK);
     g_signal_connect(t->btn, "button-press-event", G_CALLBACK(on_item_click), t);
     g_signal_connect(t->btn, "scroll-event", G_CALLBACK(on_item_scroll), t);
 
@@ -323,6 +339,7 @@ static void item_add(const char *reg) {
     t->sig = g_dbus_connection_signal_subscribe(bus, t->service, SNI_ITEM, NULL, t->path, NULL,
                  G_DBUS_SIGNAL_FLAGS_NONE, on_item_signal, item_ref(t), item_unref);
     tray_items = g_list_append(tray_items, t);
+    notify_changed();
     item_fetch(t);
 }
 
@@ -333,7 +350,7 @@ static void item_remove(const char *reg) {
         tray_items = g_list_delete_link(tray_items, l);
         t->gone = TRUE;
         g_dbus_connection_signal_unsubscribe(bus, t->sig);
-        if (t->btn) gtk_widget_destroy(t->btn);
+        item_destroy_btn(t);
         item_unref(t);
         notify_changed();
         return;
@@ -351,11 +368,19 @@ static void on_items_list(GObject *src, GAsyncResult *res, gpointer data) {
     if (!ret) return;
     GVariant *v = NULL;
     g_variant_get(ret, "(v)", &v);             /* v holds the "as" list */
-    gsize n = 0;
-    const gchar **items = g_variant_get_strv(v, &n);
-    for (gsize i = 0; i < n; i++) item_add(items[i]);
-    g_free(items);
-    g_variant_unref(v);
+    if (v) {
+        GVariant *as = g_variant_is_of_type(v, G_VARIANT_TYPE_VARIANT) ? g_variant_get_variant(v) : g_variant_ref(v);
+        if (as && g_variant_is_of_type(as, G_VARIANT_TYPE_STRING_ARRAY)) {
+            gsize n = 0;
+            const gchar **items = g_variant_get_strv(as, &n);
+            if (items) {
+                for (gsize i = 0; i < n; i++) item_add(items[i]);
+                g_free(items);
+            }
+        }
+        if (as) g_variant_unref(as);
+        g_variant_unref(v);
+    }
     g_variant_unref(ret);
 }
 
@@ -483,7 +508,7 @@ GList *tray_get_widgets(void) {
     GList *res = NULL;
     for (GList *l = tray_items; l; l = l->next) {
         TrayItem *t = l->data;
-        if (t->btn && !t->gone) res = g_list_append(res, t->btn);
+        if (!t->gone && t->btn && gtk_widget_get_visible(t->btn)) res = g_list_append(res, t->btn);
     }
     return res;
 }

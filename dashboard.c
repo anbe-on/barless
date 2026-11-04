@@ -60,8 +60,12 @@ static void relayout_button_grid(void) {
         GList *tray_widgets = tray_get_widgets();
         for (GList *l = tray_widgets; l; l = l->next) {
             GtkWidget *w = GTK_WIDGET(l->data);
+            if (gtk_widget_get_parent(w)) {
+                gtk_container_remove(GTK_CONTAINER(gtk_widget_get_parent(w)), w);
+            }
             if (gtk_widget_get_visible(w)) {
                 gtk_grid_attach(GTK_GRID(bgrid), w, i % cols, i / cols, 1, 1);
+                gtk_widget_show(w);
                 i++;
             }
         }
@@ -71,7 +75,11 @@ static void relayout_button_grid(void) {
     /* User-defined buttons from config.ini */
     for (GList *l = user_buttons; l; l = l->next) {
         GtkWidget *w = GTK_WIDGET(l->data);
+        if (gtk_widget_get_parent(w)) {
+            gtk_container_remove(GTK_CONTAINER(gtk_widget_get_parent(w)), w);
+        }
         gtk_grid_attach(GTK_GRID(bgrid), w, i % cols, i / cols, 1, 1);
+        gtk_widget_show(w);
         i++;
     }
 
@@ -589,8 +597,8 @@ int dashboard_run(gboolean spawned) {
         g_signal_connect(win, "motion-notify-event", G_CALLBACK(on_motion), NULL);
         load_pos();
     }
-    gtk_widget_show_all(win);
     tray_init(tray_as_buttons ? NULL : tray_box, cfg_int("dashboard", "tray_icon", 18), on_tray_changed);
+    gtk_widget_show_all(win);
 
     history_init();
     history_tick();
