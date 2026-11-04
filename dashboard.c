@@ -21,12 +21,14 @@
 
 /* widgets that dash_tick() refreshes */
 static GtkWidget *w_clock, *w_date, *w_cpu, *w_temp, *w_net, *w_bat;
-static GtkWidget *tray_card = NULL, *tray_box = NULL, *w_netchart = NULL;
+static GtkWidget *tray_card = NULL, *tray_box = NULL;
+static GtkWidget *w_netchart = NULL, *w_cpuchart = NULL, *w_tempchart = NULL, *w_batchart = NULL;
 
-/* net history for the chart: newest sample last, one per second */
-#define HIST_MAX 600
-static double h_down[HIST_MAX], h_up[HIST_MAX];
-static int h_n = 30, h_count = 0;          /* h_n = seconds shown ([dashboard] net_chart_seconds) */
+typedef struct {
+    HistMetric metric;
+    int seconds;
+    char name[32];
+} ChartInfo;
 
 static GtkAlign align_cfg(const char *key, const char *def) {
     char *v = cfg_str("dashboard", key, def);
@@ -74,37 +76,89 @@ static GtkWidget *stat_row(GtkWidget *grid, int row, const char *key, GtkWidget 
     return k;
 }
 
-/* two-line chart of download (solid) and upload (dimmer): colour = CSS `color` of #netchart */
-static gboolean netchart_draw(GtkWidget *w, cairo_t *cr, gpointer d) {
-    (void)d;
+/* Universal chart drawing (net, cpu, temp, battery). Colour = CSS `color` of widget */
+static gboolean chart_draw(GtkWidget *w, cairo_t *cr, gpointer d) {
+    ChartInfo *ci = (ChartInfo *)d;
+    if (!ci) return FALSE;
     int W = gtk_widget_get_allocated_width(w), H = gtk_widget_get_allocated_height(w);
     GdkRGBA c;
     gtk_style_context_get_color(gtk_widget_get_style_context(w), gtk_widget_get_state_flags(w), &c);
-    double max = 10 * 1024;                          /* floor: an idle line stays flat, not noisy */
-    int n = MIN(h_n, h_count);
-    for (int i = 0; i < n; i++) {
-        int k = h_count - n + i;
-        double a = h_down[k % HIST_MAX], b = h_up[k % HIST_MAX];
-        if (a > max) max = a;
-        if (b > max) max = b;
+
+    int n = ci->seconds;
+    if (n < 5) n = 5;
+    if (n > HIST_CAPACITY) n = HIST_CAPACITY;
+
+    double p1[HIST_CAPACITY], p2[HIST_CAPACITY];
+    int count = history_get(ci->metric, p1, p2, n);
+
+    double max = 1.0;
+    if (ci->metric == HIST_METRIC_NET) {
+        max = 10 * 1024;                          /* floor: an idle line stays flat, not noisy */
+        for (int i = 0; i < count; i++) {
+            if (p1[i] > max) max = p1[i];
+            if (p2[i] > max) max = p2[i];
+        }
+    } else if (ci->metric == HIST_METRIC_CPU || ci->metric == HIST_METRIC_BATTERY) {
+        max = 100.0;
+    } else if (ci->metric == HIST_METRIC_TEMP) {
+        max = 100.0;
+        for (int i = 0; i < count; i++) {
+            if (p1[i] > max) max = p1[i];
+        }
     }
+
+    /* Baseline */
     cairo_set_line_width(cr, 1.0);
-    cairo_set_source_rgba(cr, c.red, c.green, c.blue, 0.2);          /* baseline */
+    cairo_set_source_rgba(cr, c.red, c.green, c.blue, 0.2);
     cairo_move_to(cr, 0, H - 0.5); cairo_line_to(cr, W, H - 0.5); cairo_stroke(cr);
-    for (int pass = 0; pass < 2; pass++) {                           /* 0 = upload (behind), 1 = download */
-        cairo_set_source_rgba(cr, c.red, c.green, c.blue, pass ? c.alpha : c.alpha * 0.45);
+
+    int passes = (ci->metric == HIST_METRIC_NET) ? 2 : 1;
+    for (int pass = 0; pass < passes; pass++) {
+        gboolean is_sec = (ci->metric == HIST_METRIC_NET && pass == 0);
+        double *data = is_sec ? p2 : p1;
+        double line_alpha = is_sec ? c.alpha * 0.45 : c.alpha;
+
+        cairo_set_source_rgba(cr, c.red, c.green, c.blue, line_alpha);
         cairo_set_line_width(cr, 1.5);
-        for (int i = 0; i < h_n; i++) {
-            int back = h_n - 1 - i;                                  /* samples ago */
+
+        for (int i = 0; i < n; i++) {
+            int back = n - 1 - i;
             double v = 0;
-            if (back < h_count) { int k = h_count - 1 - back; v = (pass ? h_down : h_up)[k % HIST_MAX]; }
-            double x = h_n > 1 ? (double)i * (W - 1) / (h_n - 1) : 0;
-            double y = (H - 2) - v / max * (H - 4);
+            if (back < count) {
+                v = data[count - 1 - back];
+            }
+            double x = n > 1 ? (double)i * (W - 1) / (n - 1) : 0;
+            double y = (H - 2) - (v / max) * (H - 4);
+            if (y < 2) y = 2;
+            if (y > H - 2) y = H - 2;
+
             if (i == 0) cairo_move_to(cr, x, y); else cairo_line_to(cr, x, y);
         }
         cairo_stroke(cr);
     }
     return FALSE;
+}
+
+static GtkWidget *create_chart(HistMetric metric, const char *name, int def_sec, int def_h) {
+    char sec_key[64], h_key[64];
+    snprintf(sec_key, sizeof sec_key, "%s_seconds", name);
+    snprintf(h_key, sizeof h_key, "%s_height", name);
+
+    int g_sec = cfg_int("dashboard", "chart_seconds", 30);
+    int g_h = cfg_int("dashboard", "chart_height", 36);
+
+    ChartInfo *ci = g_new0(ChartInfo, 1);
+    ci->metric = metric;
+    ci->seconds = CLAMP(cfg_int("dashboard", sec_key, g_sec ? g_sec : def_sec), 5, HIST_CAPACITY);
+    int h = MAX(12, cfg_int("dashboard", h_key, g_h ? g_h : def_h));
+    g_strlcpy(ci->name, name, sizeof(ci->name));
+
+    GtkWidget *w = gtk_drawing_area_new();
+    gtk_widget_set_name(w, name);
+    gtk_style_context_add_class(gtk_widget_get_style_context(w), "chart");
+    gtk_widget_set_size_request(w, -1, h);
+    g_signal_connect_data(w, "draw", G_CALLBACK(chart_draw), ci, (GClosureNotify)g_free, 0);
+    return w;
 }
 
 /* ================================================================== */
@@ -131,16 +185,28 @@ static void build_dashboard(GtkWidget *root) {
     int row = 0;
     for (char **st = stats; *st; st++) {
         if (!**st) continue;
-        if (!g_ascii_strcasecmp(*st, "cpu")) stat_row(grid, row++, "cpu", &w_cpu);
-        else if (!g_ascii_strcasecmp(*st, "temp")) stat_row(grid, row++, "temp", &w_temp);
-        else if (!g_ascii_strcasecmp(*st, "battery")) stat_row(grid, row++, "battery", &w_bat);
-        else if (!g_ascii_strcasecmp(*st, "net")) {
+        if (!g_ascii_strcasecmp(*st, "cpu")) {
+            stat_row(grid, row++, "cpu", &w_cpu);
+            if (cfg_bool("dashboard", "cpu_chart", FALSE)) {
+                w_cpuchart = create_chart(HIST_METRIC_CPU, "cpuchart", 30, 36);
+                gtk_grid_attach(GTK_GRID(grid), w_cpuchart, 0, row++, 2, 1);
+            }
+        } else if (!g_ascii_strcasecmp(*st, "temp")) {
+            stat_row(grid, row++, "temp", &w_temp);
+            if (cfg_bool("dashboard", "temp_chart", FALSE)) {
+                w_tempchart = create_chart(HIST_METRIC_TEMP, "tempchart", 30, 36);
+                gtk_grid_attach(GTK_GRID(grid), w_tempchart, 0, row++, 2, 1);
+            }
+        } else if (!g_ascii_strcasecmp(*st, "battery")) {
+            stat_row(grid, row++, "battery", &w_bat);
+            if (cfg_bool("dashboard", "battery_chart", FALSE)) {
+                w_batchart = create_chart(HIST_METRIC_BATTERY, "batterychart", 30, 36);
+                gtk_grid_attach(GTK_GRID(grid), w_batchart, 0, row++, 2, 1);
+            }
+        } else if (!g_ascii_strcasecmp(*st, "net")) {
             stat_row(grid, row++, "net", &w_net);
             if (cfg_bool("dashboard", "net_chart", TRUE)) {
-                w_netchart = gtk_drawing_area_new();
-                gtk_widget_set_name(w_netchart, "netchart");
-                gtk_widget_set_size_request(w_netchart, -1, MAX(12, cfg_int("dashboard", "chart_height", 36)));
-                g_signal_connect(w_netchart, "draw", G_CALLBACK(netchart_draw), NULL);
+                w_netchart = create_chart(HIST_METRIC_NET, "netchart", 30, 36);
                 gtk_grid_attach(GTK_GRID(grid), w_netchart, 0, row++, 2, 1);
             }
         }
@@ -196,20 +262,25 @@ static void build_dashboard(GtkWidget *root) {
 }
 /* ================================================================== */
 
-/* net runs on its own timer: every second while the chart is shown (that is what feeds it) */
+/* chart tick runs every second while any chart or net row is shown */
 static gboolean net_tick(gpointer d) {
     (void)d;
-    double down, up;
-    char ds[32], us[32], b[96];
-    net_read(&down, &up);
-    h_down[h_count % HIST_MAX] = down;
-    h_up[h_count % HIST_MAX] = up;
-    h_count++;
-    fmt_speed(down, ds, sizeof ds);
-    fmt_speed(up, us, sizeof us);
-    snprintf(b, sizeof b, "\xe2\x96\xbc %s  \xe2\x96\xb2 %s", ds, us);   /* down = download, up = upload */
-    gtk_label_set_text(GTK_LABEL(w_net), b);
+    history_tick();
+    double down = 0, up = 0;
+    if (!history_latest(NULL, NULL, &down, &up, NULL)) {
+        net_read(&down, &up);
+    }
+    if (w_net) {
+        char ds[32], us[32], b[96];
+        fmt_speed(down, ds, sizeof ds);
+        fmt_speed(up, us, sizeof us);
+        snprintf(b, sizeof b, "\xe2\x96\xbc %s  \xe2\x96\xb2 %s", ds, us);   /* down = download, up = upload */
+        gtk_label_set_text(GTK_LABEL(w_net), b);
+    }
     if (w_netchart) gtk_widget_queue_draw(w_netchart);
+    if (w_cpuchart) gtk_widget_queue_draw(w_cpuchart);
+    if (w_tempchart) gtk_widget_queue_draw(w_tempchart);
+    if (w_batchart) gtk_widget_queue_draw(w_batchart);
     return G_SOURCE_CONTINUE;
 }
 
@@ -224,13 +295,17 @@ static gboolean dash_tick(gpointer d) {
     strftime(b, sizeof b, "%A, %d %B %Y", &tm);
     gtk_label_set_text(GTK_LABEL(w_date), b);
 
+    double cpu = 0, temp = 0;
+    gboolean has_hist = history_latest(&cpu, &temp, NULL, NULL, NULL);
+
     if (w_cpu) {
-        snprintf(b, sizeof b, "%d%%", cpu_read());
+        int cpupct = has_hist ? (int)cpu : cpu_read();
+        snprintf(b, sizeof b, "%d%%", cpupct);
         gtk_label_set_text(GTK_LABEL(w_cpu), b);
     }
     if (w_temp) {
-        int temp = temp_read();
-        if (temp >= 0) snprintf(b, sizeof b, "%d\xc2\xb0""C", temp); else snprintf(b, sizeof b, "n/a");
+        int tval = has_hist ? (int)temp : temp_read();
+        if (tval >= 0) snprintf(b, sizeof b, "%d\xc2\xb0""C", tval); else snprintf(b, sizeof b, "n/a");
         gtk_label_set_text(GTK_LABEL(w_temp), b);
     }
     if (!w_bat) return G_SOURCE_CONTINUE;
@@ -381,6 +456,32 @@ int dashboard_run(gboolean spawned) {
                                                   GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
     }
 
+    /* background transparency and card alpha from config */
+    {
+        char *bg = cfg_str("dashboard", "bg", NULL);
+        if (!bg) bg = cfg_str("dashboard", "background", NULL);
+        char css_str[512];
+        if (bg && *bg) {
+            snprintf(css_str, sizeof css_str, "window#dashboard { background-color: %s; }", bg);
+        } else {
+            double alpha = cfg_dbl("dashboard", "bg_alpha", 0.0);
+            snprintf(css_str, sizeof css_str, "window#dashboard { background-color: rgba(22, 22, 29, %.2f); }", alpha);
+        }
+        g_free(bg);
+
+        double card_alpha = cfg_dbl("dashboard", "card_alpha", -1.0);
+        if (card_alpha >= 0.0) {
+            char card_css[128];
+            snprintf(card_css, sizeof card_css, " .card { background-color: alpha(@foreground, %.2f); }", card_alpha);
+            g_strlcat(css_str, card_css, sizeof(css_str));
+        }
+
+        GtkCssProvider *bp = gtk_css_provider_new();
+        gtk_css_provider_load_from_data(bp, css_str, -1, NULL);
+        gtk_style_context_add_provider_for_screen(gdk_screen_get_default(), GTK_STYLE_PROVIDER(bp),
+                                                  GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    }
+
     GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_widget_set_name(win, "dashboard");
     gtk_layer_init_for_window(GTK_WINDOW(win));
@@ -424,13 +525,12 @@ int dashboard_run(gboolean spawned) {
     gtk_widget_show_all(win);
     tray_init(tray_box, cfg_int("dashboard", "tray_icon", 18), on_tray_changed);
 
-    h_n = CLAMP(cfg_int("dashboard", "net_chart_seconds", 30), 5, HIST_MAX);
-    cpu_read();                 /* prime the delta counters */
-    double d0, u0;
-    net_read(&d0, &u0);
+    history_init();
+    history_tick();
     dash_tick(NULL);
     g_timeout_add_seconds(interval, dash_tick, NULL);
-    if (w_net) g_timeout_add_seconds(w_netchart ? 1 : interval, net_tick, NULL);
+    gboolean any_chart = (w_netchart || w_cpuchart || w_tempchart || w_batchart);
+    if (w_net || any_chart) g_timeout_add_seconds(any_chart ? 1 : interval, net_tick, NULL);
 
     g_unix_signal_add(SIGTERM, quit_cb, NULL);
     g_unix_signal_add(SIGINT, quit_cb, NULL);

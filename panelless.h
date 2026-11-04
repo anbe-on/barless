@@ -31,6 +31,21 @@ int         cpu_read(void);                      /* % since the previous call */
 void        net_read(double *down_bps, double *up_bps);   /* since the previous call */
 void        fmt_speed(double bps, char *out, size_t len);
 
+/* Persistent history ring buffer across dashboard restarts */
+#define HIST_CAPACITY 600                        /* 10 minutes at 1 sample/sec */
+
+typedef enum {
+    HIST_METRIC_NET,
+    HIST_METRIC_CPU,
+    HIST_METRIC_TEMP,
+    HIST_METRIC_BATTERY
+} HistMetric;
+
+void history_init(void);
+void history_tick(void);                         /* sample and record once per second */
+int  history_get(HistMetric metric, double *p1, double *p2, int max_samples);
+gboolean history_latest(double *cpu, double *temp, double *net_down, double *net_up, BatInfo *bat);
+
 /* ---- indicator.c ---------------------------------------------------- */
 int  indicator_run(void);
 void hypr_info(void);

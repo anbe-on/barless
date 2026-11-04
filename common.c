@@ -6,6 +6,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 /* ================================================================== */
 /* Default files (written on first run, never overwritten)             */
@@ -29,7 +33,7 @@ static const char DEFAULT_CONFIG[] =
 "dodge_ms=1200\n"
 "show_temp=true\n"
 "show_watts=true\n"
-"# battery look: arrow (compact: the up/down arrow is coloured by charge level; idle/full shows a dot)\n"
+"# battery look: arrow (compact: the up/down triangle is filled & coloured by charge level; idle/full shows a dot)\n"
 "#               | square (the little square only) | both\n"
 "battery_style=arrow\n"
 "# battery states: .ok above battery_mid, .mid up to it, .low at/below battery_low\n"
@@ -38,11 +42,17 @@ static const char DEFAULT_CONFIG[] =
 "# temperature states: .warm and .hot on #temp\n"
 "temp_warm=65\n"
 "temp_hot=85\n"
-"# unfilled part of the battery square, 0..1\n"
+"# unfilled part of the battery shape, 0..1\n"
 "track_alpha=0.25\n"
 "radius=0\n"
 "# optional: force one sensor file instead of auto-detect (see: panelless --info)\n"
 "# temp_path=/sys/devices/platform/coretemp.0/hwmon/hwmon5/temp1_input\n"
+"# hide indicator when active workspace has no windows and dashboard opens\n"
+"hide_on_empty=false\n"
+"# background color / transparency (e.g. transparent, rgba(22, 22, 29, 0.8), or #16161d)\n"
+"bg=transparent\n"
+"# or set background alpha: 0.0 (transparent) to 1.0 (opaque)\n"
+"# bg_alpha=0.0\n"
 "\n"
 "[dashboard]\n"
 "# open automatically on a workspace with no windows (needs Hyprland)\n"
@@ -68,10 +78,19 @@ static const char DEFAULT_CONFIG[] =
 "movable=true\n"
 "# which stats to show, in this order. Remove a name to hide it: cpu, temp, net, battery\n"
 "stats=cpu,temp,net,battery\n"
-"# line chart under the net row (download solid, upload dimmer), one sample per second\n"
+"# line charts under stats (one sample per second, preserved across panel restarts)\n"
 "net_chart=true\n"
+"cpu_chart=false\n"
+"temp_chart=false\n"
+"battery_chart=false\n"
+"# seconds of history to show in charts (net_chart_seconds, etc. can override per-chart)\n"
+"chart_seconds=30\n"
 "net_chart_seconds=30\n"
 "chart_height=36\n"
+"# background color / transparency of the dashboard window\n"
+"bg=transparent\n"
+"# background transparency of cards (0.0 to 1.0)\n"
+"card_alpha=0.06\n"
 "# buttons: false = icon only (tooltip still shows the label)\n"
 "show_labels=true\n"
 "# used by buttons with terminal=true\n"
@@ -171,7 +190,7 @@ static const char DEFAULT_CSS[] =
 "}\n"
 "/* corner radius: [dashboard] radius in config.ini (add your own border-radius here to override).\n"
 "   Bold / italic work on any element, e.g.  #bigclock { font-weight: bold; }  #date { font-style: italic; } */\n"
-"#netchart { color: alpha(@foreground, 0.8); }   /* chart line colour (upload is drawn dimmer) */\n"
+"#netchart, #cpuchart, #tempchart, #batterychart, .chart { color: alpha(@foreground, 0.8); }   /* chart line colour (upload is drawn dimmer) */\n"
 "#bigclock { font-size: 46px; color: alpha(@foreground, 0.9); }\n"
 "#date     { font-size: 15px; color: alpha(@foreground, 0.55); }\n"
 ".stat-key { color: alpha(@foreground, 0.45); }\n"
@@ -566,4 +585,145 @@ void fmt_speed(double bps, char *out, size_t len) {
     else if (v < 99.95) snprintf(num, sizeof num, "%.1f", v);
     else                snprintf(num, sizeof num, "%.0f", v);
     snprintf(out, len, "%4s%s", num, units[u]);
+}
+
+/* ================================================================== */
+/* History ring buffer across panel restarts (shared memory tmpfs)     */
+/* ================================================================== */
+#define HIST_MAGIC 0x50414E4C /* "PANL" */
+#define HIST_VERSION 1
+
+typedef struct {
+    gint64 timestamp;
+    double net_down;
+    double net_up;
+    double cpu;
+    double temp;
+    double bat_cap;
+    double bat_watts;
+} HistSample;
+
+typedef struct {
+    guint32 magic;
+    guint32 version;
+    guint32 count;
+    gint64  last_time;
+    pid_t   last_writer_pid;
+    HistSample samples[HIST_CAPACITY];
+} HistData;
+
+static HistData *hist = NULL;
+
+void history_init(void) {
+    if (hist) return;
+    const char *runtimedir = g_get_user_runtime_dir();
+    char *dir = g_build_filename(runtimedir ? runtimedir : "/tmp", "panelless", NULL);
+    g_mkdir_with_parents(dir, 0700);
+    char *path = g_build_filename(dir, "history.bin", NULL);
+    g_free(dir);
+
+    int fd = open(path, O_RDWR | O_CREAT, 0600);
+    g_free(path);
+    if (fd < 0) return;
+
+    struct stat st;
+    if (fstat(fd, &st) == 0 && (size_t)st.st_size < sizeof(HistData)) {
+        if (ftruncate(fd, sizeof(HistData)) != 0) {
+            close(fd);
+            return;
+        }
+    }
+
+    void *mem = mmap(NULL, sizeof(HistData), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    close(fd);
+    if (mem == MAP_FAILED) return;
+
+    hist = (HistData *)mem;
+    if (hist->magic != HIST_MAGIC || hist->version != HIST_VERSION) {
+        memset(hist, 0, sizeof(HistData));
+        hist->magic = HIST_MAGIC;
+        hist->version = HIST_VERSION;
+    }
+}
+
+void history_tick(void) {
+    history_init();
+    if (!hist) return;
+
+    gint64 now = g_get_monotonic_time();
+    /* If another process recorded within the last 850ms, avoid double sampling */
+    if (hist->count > 0 && (now - hist->last_time) < 850000 && hist->last_writer_pid != getpid()) {
+        return;
+    }
+
+    double down = 0, up = 0;
+    net_read(&down, &up);
+    double cpu = (double)cpu_read();
+    double temp = (double)temp_read();
+    BatInfo b;
+    bat_read(&b);
+
+    guint32 idx = hist->count % HIST_CAPACITY;
+    hist->samples[idx].timestamp = now;
+    hist->samples[idx].net_down = down;
+    hist->samples[idx].net_up = up;
+    hist->samples[idx].cpu = cpu >= 0 ? cpu : 0;
+    hist->samples[idx].temp = temp >= 0 ? temp : 0;
+    hist->samples[idx].bat_cap = b.present ? (double)b.cap : 0;
+    hist->samples[idx].bat_watts = b.present ? b.watts : 0;
+
+    hist->last_time = now;
+    hist->last_writer_pid = getpid();
+    hist->count++;
+}
+
+int history_get(HistMetric metric, double *p1, double *p2, int max_samples) {
+    history_init();
+    if (!hist || hist->count == 0 || max_samples <= 0) return 0;
+
+    guint32 total = hist->count;
+    int available = (total < HIST_CAPACITY) ? (int)total : HIST_CAPACITY;
+    int n = (available < max_samples) ? available : max_samples;
+
+    for (int i = 0; i < n; i++) {
+        guint32 idx = (total - n + i) % HIST_CAPACITY;
+        HistSample *s = &hist->samples[idx];
+        switch (metric) {
+            case HIST_METRIC_NET:
+                if (p1) p1[i] = s->net_down;
+                if (p2) p2[i] = s->net_up;
+                break;
+            case HIST_METRIC_CPU:
+                if (p1) p1[i] = s->cpu;
+                if (p2) p2[i] = 0;
+                break;
+            case HIST_METRIC_TEMP:
+                if (p1) p1[i] = s->temp;
+                if (p2) p2[i] = 0;
+                break;
+            case HIST_METRIC_BATTERY:
+                if (p1) p1[i] = s->bat_cap;
+                if (p2) p2[i] = s->bat_watts;
+                break;
+        }
+    }
+    return n;
+}
+
+gboolean history_latest(double *cpu, double *temp, double *net_down, double *net_up, BatInfo *bat) {
+    history_init();
+    if (!hist || hist->count == 0) return FALSE;
+    guint32 idx = (hist->count - 1) % HIST_CAPACITY;
+    HistSample *s = &hist->samples[idx];
+    if (cpu) *cpu = s->cpu;
+    if (temp) *temp = s->temp;
+    if (net_down) *net_down = s->net_down;
+    if (net_up) *net_up = s->net_up;
+    if (bat) {
+        memset(bat, 0, sizeof(*bat));
+        bat->present = (s->bat_cap > 0 || s->bat_watts > 0);
+        bat->cap = (int)s->bat_cap;
+        bat->watts = s->bat_watts;
+    }
+    return TRUE;
 }
