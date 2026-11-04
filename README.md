@@ -158,6 +158,18 @@ chart_height=36
 - **Temp chart**: Real-time package temperature in °C.
 - **Battery chart**: Battery charge capacity % (0–100%).
 
+### Dashboard Alignment & Layout
+In `[dashboard]` section of `config.ini`:
+```ini
+# Element placement: left | center | right
+clock_align=left
+date_align=left
+key_align=left
+value_align=right
+button_align=center
+tray_align=center       # Tray icons alignment: center (default), left, or right
+```
+
 ---
 
 ### 3. Indicator Configuration & Triangle Battery

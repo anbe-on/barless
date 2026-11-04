@@ -73,6 +73,7 @@ static const char DEFAULT_CONFIG[] =
 "key_align=left\n"
 "value_align=right\n"
 "button_align=center\n"
+"tray_align=center\n"
 "# middle-click-drag the panel to move it; the spot is remembered in position.ini\n"
 "# (delete that file to go back to the default corner). Set false to disable.\n"
 "movable=true\n"

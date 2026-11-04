@@ -256,7 +256,9 @@ static void build_dashboard(GtkWidget *root) {
 
     /* --- tray (hidden until an app has an icon) --- */
     tray_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+    gtk_widget_set_halign(tray_box, align_cfg("tray_align", "center"));
     tray_card = new_card(root, tray_box);
+    gtk_widget_set_name(tray_card, "tray");
     gtk_widget_set_no_show_all(tray_card, TRUE);     /* hidden until the first icon arrives... */
     gtk_widget_show(tray_box);                       /* ...but the box inside must still be shown */
 }
