@@ -1,7 +1,7 @@
 /* indicator.c - the always-on top-right indicator + Hyprland IPC watcher.
  *
  * Shows: HH:MM   CPU temp   battery square (+ direction arrow + watts).
- * Also watches Hyprland and starts/stops the dashboard process when the active
+ * Also watches Hyprland and opens/closes the card (card.c) when the active
  * workspace has no windows. */
 #include "barless.h"
 #include <glib-unix.h>
@@ -13,7 +13,7 @@
 #include <stdlib.h>
 #include <time.h>
 
-static GtkWidget *win, *time_l, *temp_l, *bat_da, *arrow_l, *watts_l;
+static GtkWidget *win, *root, *row, *time_l, *temp_l, *bat_da, *arrow_l, *watts_l;
 static int m_top, m_right, shift_px, shift_ix = 0;
 static gboolean dodge_on, dodged = FALSE;
 static int dodge_ms;
@@ -23,8 +23,11 @@ static double track_alpha;
 static int radius;
 static int bat_mid, bat_low, temp_warm, temp_hot;
 static gboolean show_temp, show_watts, bat_square, bat_arrow;
-static gboolean hide_on_empty = FALSE;
+static gboolean expanded = FALSE, demo = FALSE;
 static char *bat_col_ok = NULL, *bat_col_mid = NULL, *bat_col_low = NULL;
+static int reveal_delay = 250, reveal_ms = 150;
+static guint reveal_id = 0;
+static gint64 reveal_t0 = 0;
 
 /* ================================================================== */
 /* Hyprland IPC (plain unix sockets, no deps)                          */
@@ -97,58 +100,19 @@ void hypr_info(void) {
 }
 
 /* ================================================================== */
-/* Dashboard process: spawned when the workspace is empty              */
+/* The card: opens on an empty workspace, closes when a window appears */
 /* ================================================================== */
-static GSubprocess *dash = NULL;
-static gint64 dash_started = 0;
-static char *self_exe = NULL;
 static guint recheck_id = 0;
 
 static void schedule_recheck(guint ms);
-
-static void dash_exited(GObject *src, GAsyncResult *res, gpointer d) {
-    (void)d;
-    g_subprocess_wait_finish(G_SUBPROCESS(src), res, NULL);
-    if (dash == G_SUBPROCESS(src)) g_clear_object(&dash);
-    schedule_recheck(100);        /* it may have been stopped just as the workspace emptied again */
-}
-
-static void dash_start(void) {
-    if (dash) return;
-    gint64 now = g_get_monotonic_time();
-    if (now - dash_started < 1000000) { schedule_recheck(1000); return; }   /* no crash loops */
-    dash_started = now;
-    char *exe = g_strdup(self_exe);
-    char *del = strstr(exe, " (deleted)");     /* binary was replaced while running */
-    if (del) *del = '\0';
-    const char *argv[] = { exe, "--dashboard", "--spawned", NULL };
-    GError *e = NULL;
-    dash = g_subprocess_newv(argv, G_SUBPROCESS_FLAGS_NONE, &e);
-    if (!dash) {
-        g_printerr("barless: cannot start dashboard: %s\n", e->message);
-        g_error_free(e);
-    } else {
-        g_subprocess_wait_async(dash, NULL, dash_exited, NULL);
-    }
-    g_free(exe);
-}
-
-static void dash_stop(void) {
-    if (dash) g_subprocess_send_signal(dash, SIGTERM);
-}
 
 static gboolean recheck(gpointer d) {
     (void)d;
     recheck_id = 0;
     int n = active_ws_windows();
     if (n < 0) return G_SOURCE_REMOVE;
-    if (n == 0) {
-        dash_start();
-        if (hide_on_empty && win) gtk_widget_set_visible(win, FALSE);
-    } else {
-        dash_stop();
-        if (hide_on_empty && win) gtk_widget_set_visible(win, TRUE);
-    }
+    if (n == 0) card_open();
+    else card_close();
     return G_SOURCE_REMOVE;
 }
 
@@ -341,6 +305,7 @@ static void apply_margins(void) {
 
 static gboolean shift_tick(gpointer d) {
     (void)d;
+    if (expanded) return G_SOURCE_CONTINUE;
     shift_ix = (shift_ix + 1) % 4;
     apply_margins();
     return G_SOURCE_CONTINUE;
@@ -390,7 +355,7 @@ static gboolean dodge_check(gpointer d) {
 
 static gboolean on_enter(GtkWidget *w, GdkEventCrossing *e, gpointer d) {
     (void)w; (void)e; (void)d;
-    if (!dodge_on || dodged) return FALSE;
+    if (!dodge_on || dodged || expanded) return FALSE;
     dodged = TRUE;
     gtk_layer_set_anchor(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_RIGHT, FALSE);   /* only TOP => centred */
     apply_margins();
@@ -399,17 +364,58 @@ static gboolean on_enter(GtkWidget *w, GdkEventCrossing *e, gpointer d) {
     return FALSE;
 }
 
-static gboolean quit_cb(gpointer d) {
+static gboolean reveal_step(gpointer d) {
     (void)d;
-    dash_stop();
-    gtk_main_quit();
-    return G_SOURCE_REMOVE;
+    double t = (g_get_monotonic_time() - reveal_t0) / 1000.0 - reveal_delay;
+    if (t < 0) return G_SOURCE_CONTINUE;
+    if (!gtk_widget_get_visible(win)) gtk_widget_show(win);
+    double o = t <= 0 ? 0.0 : (reveal_ms <= 0 || t >= reveal_ms) ? 1.0 : t / reveal_ms;
+    gtk_widget_set_opacity(row, o);
+    if (o >= 1.0) { reveal_id = 0; return G_SOURCE_REMOVE; }
+    return G_SOURCE_CONTINUE;
 }
 
-static gboolean hist_timer_cb(gpointer d) {
+/* ---- expand / collapse: ONE window. The indicator row hides, the card takes its place ---- */
+void indicator_demo(void) { demo = TRUE; }
+
+GtkWidget *indicator_expand(GtkWidget *card, int top, int right) {
+    expanded = TRUE;
+    if (reveal_id) { g_source_remove(reveal_id); reveal_id = 0; }
+    gtk_widget_set_opacity(row, 1.0);
+    gtk_widget_show(win);
+    if (dodge_id) { g_source_remove(dodge_id); dodge_id = 0; }
+    dodged = FALSE;
+    gtk_layer_set_anchor(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_RIGHT, TRUE);
+    gtk_layer_set_margin(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_TOP, top);
+    gtk_layer_set_margin(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_RIGHT, right);
+    gtk_layer_set_layer(GTK_WINDOW(win), GTK_LAYER_SHELL_LAYER_BOTTOM);   /* windows always cover it */
+    set_input(TRUE);
+    gtk_widget_set_name(win, "dashboard");                 /* CSS: window#dashboard instead of window#indicator */
+    gtk_widget_hide(row);
+    gtk_box_pack_start(GTK_BOX(root), card, FALSE, FALSE, 0);
+    return win;
+}
+
+void indicator_collapse(GtkWidget *card) {
+    expanded = FALSE;
+    if (card) gtk_widget_destroy(card);
+    gtk_widget_set_name(win, "indicator");
+    gtk_layer_set_layer(GTK_WINDOW(win), GTK_LAYER_SHELL_LAYER_TOP);
+    apply_margins();
+    gtk_widget_set_opacity(row, reveal_delay > 0 || reveal_ms > 0 ? 0.0 : 1.0);
+    gtk_widget_show(row);
+    gtk_window_resize(GTK_WINDOW(win), 1, 1);
+    if (reveal_delay > 0 || reveal_ms > 0) {
+        gtk_widget_hide(win);
+        reveal_t0 = g_get_monotonic_time();
+        if (!reveal_id) reveal_id = g_timeout_add(16, reveal_step, NULL);
+    }
+}
+
+static gboolean quit_cb(gpointer d) {
     (void)d;
-    history_tick();
-    return G_SOURCE_CONTINUE;
+    gtk_main_quit();
+    return G_SOURCE_REMOVE;
 }
 
 int indicator_run(void) {
@@ -428,13 +434,14 @@ int indicator_run(void) {
         bat_arrow = g_ascii_strcasecmp(bs, "square") != 0;
         g_free(bs);
     }
-    hide_on_empty = cfg_bool("indicator", "hide_on_empty", FALSE);
     bat_mid = cfg_int("indicator", "battery_mid", 50);
     bat_low = cfg_int("indicator", "battery_low", 20);
     temp_warm = cfg_int("indicator", "temp_warm", 65);
     temp_hot = cfg_int("indicator", "temp_hot", 85);
     track_alpha = cfg_dbl("indicator", "track_alpha", 0.25);
     radius = cfg_int("indicator", "radius", 0);
+    reveal_delay = MAX(0, cfg_int("indicator", "reveal_delay_ms", 250));
+    reveal_ms = MAX(0, cfg_int("indicator", "reveal_ms", 150));
 
     bat_col_ok = cfg_str("indicator", "battery_color_ok", "#4f7a52");
     bat_col_mid = cfg_str("indicator", "battery_color_mid", "#8f7a3a");
@@ -489,8 +496,6 @@ int indicator_run(void) {
                                                   GTK_STYLE_PROVIDER_PRIORITY_USER + 50);
     }
 
-    self_exe = g_file_read_link("/proc/self/exe", NULL);
-    if (!self_exe) self_exe = g_strdup("barless");
 
     win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_widget_set_name(win, "indicator");
@@ -505,7 +510,7 @@ int indicator_run(void) {
     GdkVisual *vis = gdk_screen_get_rgba_visual(gtk_widget_get_screen(win));
     if (vis) gtk_widget_set_visual(win, vis);
 
-    GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     time_l = gtk_label_new("--:--");   gtk_widget_set_name(time_l, "time");
     temp_l = gtk_label_new("");        gtk_widget_set_name(temp_l, "temp");
     /* a (childless) GtkBox, not a drawing area: boxes honour CSS min-width/min-height,
@@ -524,7 +529,11 @@ int indicator_run(void) {
     gtk_box_pack_start(GTK_BOX(row), bat_da, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(row), arrow_l, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(row), watts_l, FALSE, FALSE, 0);
-    gtk_container_add(GTK_CONTAINER(win), row);
+    gtk_widget_set_halign(row, GTK_ALIGN_END);      /* never stretch over the wide card-sized window while it shrinks back */
+    gtk_widget_set_valign(row, GTK_ALIGN_START);
+    root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_box_pack_start(GTK_BOX(root), row, FALSE, FALSE, 0);
+    gtk_container_add(GTK_CONTAINER(win), root);
 
     gtk_widget_add_events(win, GDK_ENTER_NOTIFY_MASK);
     g_signal_connect(win, "enter-notify-event", G_CALLBACK(on_enter), NULL);
@@ -534,19 +543,17 @@ int indicator_run(void) {
     update_clock();
     sensor_tick(NULL);
     clock_tick(NULL);
-    history_tick();
-    g_timeout_add_seconds(1, hist_timer_cb, NULL);
     g_timeout_add_seconds(interval, sensor_tick, NULL);
     if (shift_every > 0 && shift_px > 0) g_timeout_add_seconds(shift_every, shift_tick, NULL);
 
-    /* the tray watcher must live in the always-on process so tray apps keep a stable owner */
-    tray_init(NULL, 0, NULL);
+    /* the card (and the tray watcher, so tray apps keep a stable owner) lives in this one process */
+    card_init();
 
-    if (cfg_bool("dashboard", "auto", TRUE)) hypr_watch_start();
+    if (demo) card_open();
+    else if (cfg_bool("dashboard", "auto", TRUE)) hypr_watch_start();
 
     g_unix_signal_add(SIGTERM, quit_cb, NULL);
     g_unix_signal_add(SIGINT, quit_cb, NULL);
     gtk_main();
-    dash_stop();
     return 0;
 }

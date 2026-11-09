@@ -31,28 +31,18 @@ int         cpu_read(void);                      /* % since the previous call */
 void        net_read(double *down_bps, double *up_bps);   /* since the previous call */
 void        fmt_speed(double bps, char *out, size_t len);
 
-/* Persistent history ring buffer across dashboard restarts */
-#define HIST_CAPACITY 600                        /* 10 minutes at 1 sample/sec */
-
-typedef enum {
-    HIST_METRIC_NET,
-    HIST_METRIC_CPU,
-    HIST_METRIC_TEMP,
-    HIST_METRIC_BATTERY
-} HistMetric;
-
-void history_init(void);
-void history_tick(void);                         /* sample and record once per second */
-int  history_get(HistMetric metric, double *p1, double *p2, int max_samples);
-gboolean history_latest(double *cpu, double *temp, double *net_down, double *net_up, BatInfo *bat);
-
 /* ---- indicator.c ---------------------------------------------------- */
 int  indicator_run(void);
 void hypr_info(void);
 gboolean hypr_cursor(double *x, double *y);
+GtkWidget *indicator_expand(GtkWidget *card, int top, int right);   /* the indicator window becomes the card ... */
+void indicator_collapse(GtkWidget *card);        /* ... and back (destroys the card widget) */
+void indicator_demo(void);                       /* --dashboard: open the card at start */
 
-/* ---- dashboard.c ---------------------------------------------------- */
-int  dashboard_run(gboolean spawned);
+/* ---- card.c: the one expanding card ---------------------------------- */
+void card_init(void);                            /* once: css, tray */
+void card_open(void);                            /* grow (build the window) */
+void card_close(void);                           /* animate away, then destroy the window */
 
 /* ---- tray.c --------------------------------------------------------- */
 /* box == NULL: only act as the StatusNotifier watcher (no icons are loaded).

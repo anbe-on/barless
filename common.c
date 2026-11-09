@@ -51,8 +51,6 @@ static const char DEFAULT_CONFIG[] =
 "radius=0\n"
 "# optional: force one sensor file instead of auto-detect (see: barless --info)\n"
 "# temp_path=/sys/devices/platform/coretemp.0/hwmon/hwmon5/temp1_input\n"
-"# hide indicator when active workspace has no windows and dashboard opens\n"
-"hide_on_empty=false\n"
 "# background color / transparency (e.g. transparent, #16161d, @background, @foreground, or rgba(22, 22, 29, 0.8))\n"
 "bg=transparent\n"
 "# or set background alpha: 0.0 (transparent) to 1.0 (opaque) (uses theme @background by default)\n"
@@ -61,47 +59,89 @@ static const char DEFAULT_CONFIG[] =
 "[dashboard]\n"
 "# open automatically on a workspace with no windows (needs Hyprland)\n"
 "auto=true\n"
-"width=380\n"
-"# gap to the screen edges, px (margin_top is bigger so it clears the indicator)\n"
+"width=340\n"
+"# gap to the screen edges, px (margin_top clears the indicator)\n"
 "margin=12\n"
-"margin_top=40\n"
-"columns=3\n"
-"# seconds between stat refreshes (only runs while the dashboard is open)\n"
+"margin_top=12\n"
+"# gap between the sections of the card, px\n"
+"section_gap=12\n"
+"# seconds between stat refreshes (only runs while the card is open)\n"
 "interval=5\n"
-"tray_icon=18\n"
-"# corner radius (px) of cards and buttons. 0 = square. Screens differ, so set what suits yours\n"
+"tray_icon=16\n"
+"# corner radius (px) of the card and buttons. 0 = square\n"
 "radius=0\n"
 "# text placement: left | center | right\n"
 "clock_align=left\n"
-"date_align=left\n"
-"key_align=left\n"
-"value_align=right\n"
-"button_align=center\n"
-"tray_align=center\n"
-"# show tray items as buttons in the button grid (placed first before user buttons)\n"
-"tray_buttons=true\n"
-"# middle-click-drag the panel to move it; the spot is remembered in position.ini\n"
-"# (delete that file to go back to the default corner). Set false to disable.\n"
-"movable=true\n"
-"# which stats to show, in this order. Remove a name to hide it: cpu, temp, net, battery\n"
-"stats=cpu,temp,net,battery\n"
-"# line charts under stats (one sample per second, preserved across panel restarts)\n"
-"net_chart=true\n"
-"cpu_chart=false\n"
-"temp_chart=false\n"
-"battery_chart=false\n"
-"# seconds of history to show in charts (net_chart_seconds, etc. can override per-chart)\n"
-"chart_seconds=30\n"
-"net_chart_seconds=30\n"
-"chart_height=36\n"
-"# background color / transparency of the dashboard window\n"
-"bg=transparent\n"
-"# background transparency of cards (0.0 to 1.0) (uses theme @background)\n"
-"card_alpha=0.65\n"
-"# buttons: false = icon only (tooltip still shows the label)\n"
-"show_labels=true\n"
+"stats_align=left\n"
+"button_align=left\n"
+"\n"
+"# ---- buttons: size of one square button, gap, and columns (0 = as many as fit) ----\n"
+"button_size=30\n"
+"button_gap=4\n"
+"columns=0\n"
+"# icon only (tooltip shows the label); true = icon + label\n"
+"show_labels=false\n"
 "# used by buttons with terminal=true\n"
 "terminal=xdg-terminal-exec\n"
+"# show tray items as buttons in the button grid (placed first, before your buttons)\n"
+"tray_buttons=true\n"
+"\n"
+"# ---- clock + calendar ----\n"
+"# strftime string. \\n = new line, e.g. %H\\n%M  or  %I:%M %p\n"
+"time_format=%H:%M\n"
+"calendar=true\n"
+"calendar_side=right\n"
+"# the calendar takes 1/calendar_fraction of the row, the clock the rest\n"
+"calendar_fraction=3\n"
+"calendar_week_start=sunday\n"
+"# 0 = fit the font to its slice automatically\n"
+"calendar_font_px=0\n"
+"# accent colour of today in the calendar and of the slider fill (default: accent of the Omarchy theme)\n"
+"#accent=#7aa2f7\n"
+"\n"
+"# ---- halftone shader: turns a section into a dot screen with a soft fog ----\n"
+"# sections: clock, sliders, stats, buttons. Comma list, or all, or none.\n"
+"halftone=clock\n"
+"# elements the shader leaves alone: widget names (#id) or style classes\n"
+"halftone_skip=calendar\n"
+"# dot grid step (px, 0 = shader off), fog blur radius (px, 0 = hard), crisp content over the dots 0..1, hex-offset rows\n"
+"halftone_dot=5\n"
+"halftone_fog=6\n"
+"halftone_sharp=0.0\n"
+"halftone_stagger=true\n"
+"# per section overrides: <section>.halftone_dot / _fog / _sharp / _stagger / _skip, e.g.  clock.halftone_dot=7\n"
+"\n"
+"# ---- reveal animation (runs inside barless, no compositor needed) ----\n"
+"# the card grows from its top-right corner to the bottom-left, then its content fades in element by element.\n"
+"# expand_ms = time it takes to grow, 0 = no animation.\n"
+"expand_ms=80\n"
+"card_delay_ms=50\n"
+"element_delay_ms=25\n"
+"\n"
+"# ---- sliders (bar filled up to the value, icon at one end, number at the other) ----\n"
+"sliders=volume,brightness\n"
+"slider_gap=8\n"
+"# text of the number on the bar: %d = value, %% = a % sign\n"
+"#slider_format=%d%%\n"
+"# where icon and number sit on the bar: start | center | end | hide\n"
+"#slider_icon_pos=start\n"
+"#slider_value_pos=end\n"
+"# leave a command out to use the default\n"
+"#volume_get=wpctl get-volume @DEFAULT_AUDIO_SINK@\n"
+"#volume_set=wpctl set-volume @DEFAULT_AUDIO_SINK@ %d%%\n"
+"#volume_mute=wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle\n"
+"#brightness_get=      (empty = read /sys/class/backlight)\n"
+"#brightness_set=brightnessctl set %d%%\n"
+"#volume_icon=\n"
+"#volume_icon_muted=\n"
+"#brightness_icon=\n"
+"\n"
+"# ---- stats on one line. Order = order shown, leave a name out to hide it: cpu, temp, net, battery ----\n"
+"stats=cpu,temp,net\n"
+"stats_gap=16\n"
+"# background of the window behind the card, and transparency of the card (0.0 to 1.0, uses theme @background)\n"
+"bg=transparent\n"
+"card_alpha=0.65\n"
 "\n"
 "# Buttons: one [button:name] group each, shown in this order. Add / delete / reorder freely.\n"
 "#   icon     a Nerd Font glyph (browse them at nerdfonts.com/cheat-sheet)\n"
@@ -186,20 +226,23 @@ static const char DEFAULT_CSS[] =
 "#temp.warm { color: #8f7a3a; }\n"
 "#temp.hot  { color: #a55555; }\n"
 "\n"
-"/* ============ dashboard (empty workspace) ============ */\n"
+"/* ============ the card (empty workspace) ============\n"
+"   sections: #clock #sliders #stats #buttons. window#dashboard is the transparent surface around the card. */\n"
 "window#dashboard { background-color: transparent; }\n"
-"#panel { padding: 0; }\n"
 "\n"
 ".card {\n"
 "  background-color: alpha(@background, 0.65);\n"
-"  padding: 14px 16px;\n"
-"  margin-bottom: 10px;\n"
+"  padding: 12px 14px;\n"
 "}\n"
 "/* corner radius: [dashboard] radius in config.ini (add your own border-radius here to override).\n"
-"   Bold / italic work on any element, e.g.  #bigclock { font-weight: bold; }  #date { font-style: italic; } */\n"
-"#netchart, #cpuchart, #tempchart, #batterychart, .chart { color: alpha(@foreground, 0.8); }   /* chart line colour (upload is drawn dimmer) */\n"
-"#bigclock { font-size: 46px; color: alpha(@foreground, 0.9); }\n"
-"#date     { font-size: 15px; color: alpha(@foreground, 0.55); }\n"
+"   Bold / italic work on any element, e.g.  #bigclock { font-weight: bold; } */\n"
+"#bigclock { font-size: 64px; color: alpha(@foreground, 0.9); }\n"
+"/* calendar: its font size fits its slice automatically (calendar_font_px in config.ini to force one) */\n"
+"#calendar  { color: alpha(@foreground, 0.7); }\n"
+".cal-head  { color: alpha(@foreground, 0.35); }\n"
+".cal-today { color: @accent; font-weight: bold; }\n"
+"/* sliders: #volume / #brightness are the bars (scale.slider highlight = the filled part),\n"
+"   .slider-icon and .slider-val the icon and number */\n"
 ".stat-key { color: alpha(@foreground, 0.45); }\n"
 ".stat-val { color: @foreground; }\n"
 "\n"
@@ -208,7 +251,7 @@ static const char DEFAULT_CSS[] =
 "  box-shadow: none;\n"
 "  text-shadow: none;\n"
 "  border: none;\n"
-"  padding: 12px 8px;\n"
+"  padding: 0;\n"
 "  color: @foreground;\n"
 "  background-color: alpha(@foreground, 0.06);\n"
 "  transition: background-color 150ms ease, color 150ms ease;\n"
@@ -604,145 +647,4 @@ void fmt_speed(double bps, char *out, size_t len) {
     else if (v < 99.95) snprintf(num, sizeof num, "%.1f", v);
     else                snprintf(num, sizeof num, "%.0f", v);
     snprintf(out, len, "%4s%s", num, units[u]);
-}
-
-/* ================================================================== */
-/* History ring buffer across panel restarts (shared memory tmpfs)     */
-/* ================================================================== */
-#define HIST_MAGIC 0x50414E4C /* "PANL" */
-#define HIST_VERSION 1
-
-typedef struct {
-    gint64 timestamp;
-    double net_down;
-    double net_up;
-    double cpu;
-    double temp;
-    double bat_cap;
-    double bat_watts;
-} HistSample;
-
-typedef struct {
-    guint32 magic;
-    guint32 version;
-    guint32 count;
-    gint64  last_time;
-    pid_t   last_writer_pid;
-    HistSample samples[HIST_CAPACITY];
-} HistData;
-
-static HistData *hist = NULL;
-
-void history_init(void) {
-    if (hist) return;
-    const char *runtimedir = g_get_user_runtime_dir();
-    char *dir = g_build_filename(runtimedir ? runtimedir : "/tmp", "barless", NULL);
-    g_mkdir_with_parents(dir, 0700);
-    char *path = g_build_filename(dir, "history.bin", NULL);
-    g_free(dir);
-
-    int fd = open(path, O_RDWR | O_CREAT, 0600);
-    g_free(path);
-    if (fd < 0) return;
-
-    struct stat st;
-    if (fstat(fd, &st) == 0 && (size_t)st.st_size < sizeof(HistData)) {
-        if (ftruncate(fd, sizeof(HistData)) != 0) {
-            close(fd);
-            return;
-        }
-    }
-
-    void *mem = mmap(NULL, sizeof(HistData), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    close(fd);
-    if (mem == MAP_FAILED) return;
-
-    hist = (HistData *)mem;
-    if (hist->magic != HIST_MAGIC || hist->version != HIST_VERSION) {
-        memset(hist, 0, sizeof(HistData));
-        hist->magic = HIST_MAGIC;
-        hist->version = HIST_VERSION;
-    }
-}
-
-void history_tick(void) {
-    history_init();
-    if (!hist) return;
-
-    gint64 now = g_get_monotonic_time();
-    /* If another process recorded within the last 850ms, avoid double sampling */
-    if (hist->count > 0 && (now - hist->last_time) < 850000 && hist->last_writer_pid != getpid()) {
-        return;
-    }
-
-    double down = 0, up = 0;
-    net_read(&down, &up);
-    double cpu = (double)cpu_read();
-    double temp = (double)temp_read();
-    BatInfo b;
-    bat_read(&b);
-
-    guint32 idx = hist->count % HIST_CAPACITY;
-    hist->samples[idx].timestamp = now;
-    hist->samples[idx].net_down = down;
-    hist->samples[idx].net_up = up;
-    hist->samples[idx].cpu = cpu >= 0 ? cpu : 0;
-    hist->samples[idx].temp = temp >= 0 ? temp : 0;
-    hist->samples[idx].bat_cap = b.present ? (double)b.cap : 0;
-    hist->samples[idx].bat_watts = b.present ? b.watts : 0;
-
-    hist->last_time = now;
-    hist->last_writer_pid = getpid();
-    hist->count++;
-}
-
-int history_get(HistMetric metric, double *p1, double *p2, int max_samples) {
-    history_init();
-    if (!hist || hist->count == 0 || max_samples <= 0) return 0;
-
-    guint32 total = hist->count;
-    int available = (total < HIST_CAPACITY) ? (int)total : HIST_CAPACITY;
-    int n = (available < max_samples) ? available : max_samples;
-
-    for (int i = 0; i < n; i++) {
-        guint32 idx = (total - n + i) % HIST_CAPACITY;
-        HistSample *s = &hist->samples[idx];
-        switch (metric) {
-            case HIST_METRIC_NET:
-                if (p1) p1[i] = s->net_down;
-                if (p2) p2[i] = s->net_up;
-                break;
-            case HIST_METRIC_CPU:
-                if (p1) p1[i] = s->cpu;
-                if (p2) p2[i] = 0;
-                break;
-            case HIST_METRIC_TEMP:
-                if (p1) p1[i] = s->temp;
-                if (p2) p2[i] = 0;
-                break;
-            case HIST_METRIC_BATTERY:
-                if (p1) p1[i] = s->bat_cap;
-                if (p2) p2[i] = s->bat_watts;
-                break;
-        }
-    }
-    return n;
-}
-
-gboolean history_latest(double *cpu, double *temp, double *net_down, double *net_up, BatInfo *bat) {
-    history_init();
-    if (!hist || hist->count == 0) return FALSE;
-    guint32 idx = (hist->count - 1) % HIST_CAPACITY;
-    HistSample *s = &hist->samples[idx];
-    if (cpu) *cpu = s->cpu;
-    if (temp) *temp = s->temp;
-    if (net_down) *net_down = s->net_down;
-    if (net_up) *net_up = s->net_up;
-    if (bat) {
-        memset(bat, 0, sizeof(*bat));
-        bat->present = (s->bat_cap > 0 || s->bat_watts > 0);
-        bat->cap = (int)s->bat_cap;
-        bat->watts = s->bat_watts;
-    }
-    return TRUE;
 }

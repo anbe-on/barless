@@ -1,354 +1,49 @@
 # barless
 
-An OLED-friendly, always-on minimal indicator and empty-workspace dashboard for Linux and Hyprland, built with GTK 3 and gtk-layer-shell.
+A tiny desktop shell for Hyprland in C, **GTK3 + gtk-layer-shell only**. One process, **one window**.
+
+That window is the indicator: time, CPU temperature, battery arrow / watts (OLED-muted, nudges itself, dodges the pointer).
+When the active workspace has no windows it **expands into the card**: the indicator row is swapped for the card in the
+same window (no second surface, no second process), growing from the top-right corner. When a window appears the film
+plays backwards, the card widgets are destroyed and the window shrinks back to the indicator. There is never a second clock,
+so no `hide_on_empty`.
+
+Card, top to bottom: big halftone clock + calendar (today in the accent colour) · volume / brightness bars side by side
+(icon at the start, number at the end) · stats on one line (`cpu 12%  temp 54°C  ▼ 0 B/s ▲ 0 B/s`) · small buttons
+(tray icons first, then your `[button:...]` groups).
+
+## Build
 
 ```
-       [ 14:32   48°   ▲ 15.2W ]   <-- Always-on indicator (or hides when empty)
-  ____________________________________
- |                                    |
- |           14:32                    |   <-- Clean dashboard on empty workspaces
- |           Wednesday, 4 November    |
- |  --------------------------------  |
- |   cpu                          12% |
- |   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ |   <-- Universal charts (CPU, Temp, Net, Bat)
- |   temp                         48° |       with continuous history tracking
- |   net       ▼ 1.2MB/s  ▲ 180KB/s   |
- |   -------------------------------- |
- |   [Menu] [Wifi] [Bluetooth] [Lock] |   <-- Customizable action buttons
- |____________________________________|
+sudo pacman -S gtk3 gtk-layer-shell
+make && make install        # ~/.local/bin/barless
 ```
 
----
+`exec-once = barless`. Open the card at start (to design it): `./barless --dashboard`. Sensors: `./barless --info`.
+Switch Hyprland's own layer animation off for the window, or it slides in on top of the card's film:
 
-## Highlights
-
-- **OLED Care & True Black**: Transparent background ensures zero pixel power draw on OLED screens. Features subtle pixel shifting (`shift_px` every `shift_every` seconds) to eliminate burn-in risks.
-- **Hover Dodge**: Moves to the top-center when your cursor touches it, preventing interference with top-right window controls or tabs.
-- **Smart Battery Triangle Indicator**: Directional indicator (▲ charging, ▼ discharging, ● idle/full) directly filled with the colored battery charge level, paired with real-time wattage.
-- **Workspace-Aware Auto Dashboard**: Auto-opens the dashboard when the active workspace has no windows and stops when a window appears (Hyprland IPC).
-- **Hide Indicator on Empty Workspace (Toggleable)**: Optionally hide the indicator while on an empty workspace (`hide_on_empty = true`) so all stats are cleanly displayed on the big panel without redundancy.
-- **Universal Graphs with Persistent Tracking**: Real-time line charts for Network, CPU, Temperature, and Battery. Samples are recorded continuously in a shared memory ring buffer, so graphs **never reset** when you switch workspaces or reopen the panel.
-- **Configurable Background & Transparency**: Easily adjust window and card background colors or alpha transparencies directly from `config.ini` or `style.css`.
-- **Built-in System Tray**: StatusNotifierItem watcher that preserves tray app ownership across dashboard opens and closes.
-- **Live CSS Hot Reload**: Edit `style.css` and see visual changes immediately on save.
-
----
-
-## Installation & Requirements
-
-### Dependencies
-
-- `gtk+-3.0`
-- `gtk-layer-shell-0`
-- `gcc` or `clang`
-- `make`
-- `pkg-config`
-- A Nerd Font (e.g., `GeistMono Nerd Font`) for glyph icons.
-
-On Arch Linux / Omarchy:
-```bash
-sudo pacman -S base-devel gtk3 gtk-layer-shell
+```lua
+hl.layer_rule({ name = "barless-indicator", match = { namespace = "barless-indicator" }, no_anim = true })
 ```
 
-On Debian / Ubuntu:
-```bash
-sudo apt install build-essential libgtk-3-dev libgtk-layer-shell-dev pkg-config
-```
-
-On Fedora:
-```bash
-sudo dnf install gcc make gtk3-devel gtk-layer-shell-devel pkgconf-pkg-config
-```
-
-### Building & Installing
-
-```bash
-# Clone the repository
-git clone https://github.com/your-username/barless.git
-cd barless
-
-# Build the executable
-make
-
-# Install to ~/.local/bin/barless
-make install
-```
-
----
-
-## Usage
-
-```bash
-# Run barless (indicator daemon + auto-dashboard on empty workspaces)
-barless
-
-# Run only the dashboard (useful for previewing design tweaks)
-barless --dashboard
-
-# Print detected hardware sensors, battery, and Hyprland IPC status
-barless --info
-
-# Show help options
-barless --help
-```
-
-### Testing & Simulation
-
-You can preview battery states and CSS color transitions without draining hardware battery:
-```bash
-BARLESS_FAKE_BAT="18 discharging 7.5" barless
-```
-Format: `"<capacity 0-100> <charging|discharging|idle> <watts>"`
-
----
-
-## Configuration Guide
-
-Configuration files are located at `~/.config/barless/` (automatically falls back to `~/.config/panelless/` if already present):
-- `config.ini`: Layout, sensor intervals, toggles, and button actions.
-- `style.css`: Colors, fonts, margins, and visual styles (hot-reloaded on save).
-- `position.ini`: Auto-generated when middle-click dragging the dashboard to save its screen position.
-
-Default configuration files are created automatically on first run if they do not exist.
-
-### 1. Configuring Stats (`stats = ...`)
-
-In `~/.config/barless/config.ini` under `[dashboard]`:
-```ini
-[dashboard]
-# Which stats to show and in what order (comma-separated: cpu, temp, net, battery).
-# To hide any metric, simply remove it from the list:
-stats=cpu,temp,net,battery
-```
-
-Examples:
-- Only CPU and Net: `stats=cpu,net`
-- Custom order: `stats=battery,temp,cpu,net`
-
----
-
-### 2. Configuring Universal Graphs
-
-Barless supports line charts under any metric. Historical values are recorded continuously every second in a shared memory ring buffer (`$XDG_RUNTIME_DIR/barless/history.bin`), ensuring **graphs keep track of values and do not reset** when switching workspaces or reopening the dashboard.
-
-In `~/.config/barless/config.ini` under `[dashboard]`:
-```ini
-[dashboard]
-# Toggle line charts under stats:
-net_chart=true
-cpu_chart=true
-temp_chart=true
-battery_chart=false
-
-# Global seconds of history displayed in charts (default: 30)
-chart_seconds=30
-
-# Global chart height in pixels (default: 36)
-chart_height=36
-
-# Individual overrides (optional):
-# net_chart_seconds=60
-# cpu_chart_seconds=45
-# temp_chart_seconds=30
-# cpu_chart_height=40
-```
-
-- **Net chart**: Two lines (solid line for download, dimmer line for upload) with auto-scaling (10 KB/s floor).
-- **CPU chart**: Real-time CPU % (scaled 0–100%).
-- **Temp chart**: Real-time package temperature in °C.
-- **Battery chart**: Battery charge capacity % (0–100%).
-
-### Dashboard Alignment & Layout
-In `[dashboard]` section of `config.ini`:
-```ini
-# Element placement: left | center | right
-clock_align=left
-date_align=left
-key_align=left
-value_align=right
-button_align=center
-tray_align=center       # Tray icons alignment: center (default), left, or right
-tray_buttons=true       # Show tray items as buttons in the grid (placed first before user buttons)
-```
-
----
-
-### 3. Indicator Configuration & Triangle Battery
-
-In `~/.config/barless/config.ini` under `[indicator]`:
-```ini
-[indicator]
-# Position from top-right corner in pixels
-margin_top=6
-margin_right=10
-
-# Seconds between battery and temperature sensor reads
-interval=5
-
-# OLED Care: nudge the indicator by shift_px every shift_every seconds (0 = off)
-shift_every=300
-shift_px=2
-
-# Hover dodge: jumps to top-center when cursor touches it
-dodge=true
-dodge_ms=1200
-
-# Sensor display toggles
-show_temp=true
-show_watts=true
-
-# Battery Look:
-# - arrow    (default): compact directional arrow colored by charge level;
-#                       ▲ = charging, ▼ = discharging, ● = full/idle on AC.
-# - square   : classic battery level square.
-# - both     : square meter + separate directional arrow glyph.
-battery_style=arrow
-
-# Battery state thresholds (maps to CSS classes .ok, .mid, .low)
-battery_mid=50
-battery_low=20
-
-# Optional custom battery state colors (hex or css colors):
-# battery_color_ok=#4f7a52
-# battery_color_mid=#8f7a3a
-# battery_color_low=#a55555
-
-# Temperature thresholds (maps to CSS classes .warm and .hot on #temp)
-temp_warm=65
-temp_hot=85
-
-# Unfilled portion transparency of the battery shape (0.0 to 1.0)
-track_alpha=0.25
-
-# Corner radius of the battery square if battery_style=square
-radius=0
-
-# When active workspace has no windows and the dashboard opens,
-# set to true to hide the indicator so all stats are shown only on the dashboard:
-hide_on_empty=false
-
-# Window background color or transparency:
-bg=transparent
-# Or specify alpha directly (0.0 to 1.0; uses theme @background like Kanagawa black by default):
-# bg_alpha=0.1
-```
-
----
-
-### 4. Background and Transparency Configuration
-
-Both the indicator and dashboard windows, as well as cards, support customizable backgrounds and alpha transparency:
-
-#### In `config.ini`:
-```ini
-[indicator]
-# Set background color or transparency (transparent | @background | @foreground | #16161d | rgba(...)):
-bg=transparent
-# Or specify alpha (0.0 to 1.0; applies transparency to theme @background or to the specified `bg`):
-# bg_alpha=0.2
-
-[dashboard]
-# Window background:
-bg=transparent
-# Or e.g.: bg=rgba(22, 22, 29, 0.75)
-# Or e.g.: bg_alpha=0.0   (uses theme @background)
-
-# Card background transparency (0.0 = fully transparent, 1.0 = solid):
-card_alpha=0.06
-```
-
-#### In `style.css`:
-You can also customize background colors and cards directly in CSS:
-```css
-window#indicator {
-  background-color: transparent;
-}
-
-window#dashboard {
-  background-color: transparent;
-}
-
-.card {
-  background-color: alpha(@foreground, 0.08);
-  border-radius: 8px;
-}
-```
-
----
-
-### 5. Buttons Configuration
-
-Add, remove, or reorder launcher buttons in `config.ini`. Each button is defined in its own `[button:identifier]` block:
-
-```ini
-[button:menu]
-icon=󰅀
-label=Menu
-cmd=omarchy-menu-alternative
-tooltip=App Launcher
-
-[button:wifi]
-icon=󰤨
-label=Wifi
-cmd=omarchy-launch-wifi
-
-[button:bluetooth]
-icon=󰂯
-label=Bluetooth
-cmd=omarchy-launch-bluetooth
-
-[button:btop]
-icon=󰓅
-label=btop
-cmd=btop
-terminal=true    # Launches inside terminal defined by `terminal` setting
-
-[button:lock]
-icon=
-label=Lock
-cmd=hyprlock
-
-[button:sleep]
-icon=󰤄
-label=Sleep
-cmd=systemctl suspend
-
-[button:shutdown]
-icon=
-label=Shutdown
-cmd=systemctl poweroff
-```
-
-Options per button:
-- `icon`: Nerd Font glyph.
-- `label`: Text label next to icon (set `[dashboard] show_labels=false` for icon-only mode).
-- `cmd`: Command to execute. For pipelines, use `sh -c '...'`.
-- `terminal`: Set `true` to run inside a terminal emulator (`xdg-terminal-exec`).
-- `hide`: Set `true` to keep the button definition without displaying it.
-- `tooltip`: Tooltip displayed on hover.
-
----
-
-### 6. Styling Reference (`style.css`)
-
-CSS styles are hot-reloaded automatically whenever you save `~/.config/barless/style.css`.
-
-Key CSS selectors:
-- `#indicator`: Top indicator window.
-- `#indicator #time`: Clock label in indicator.
-- `#indicator #temp`: Temperature label in indicator (`.warm`, `.hot`).
-- `#indicator #battery`: Battery meter widget (`.ok`, `.mid`, `.low`).
-- `#indicator #watts`: Wattage label (`.ok`, `.mid`, `.low`).
-- `#dashboard`: Dashboard window.
-- `.card`: Card container boxes.
-- `#bigclock`: Large dashboard clock.
-- `#date`: Dashboard date display.
-- `.stat-key`, `.stat-val`: Stat labels and values.
-- `.chart`, `#netchart`, `#cpuchart`, `#tempchart`, `#batterychart`: Line chart colors.
-- `button.action`: Action buttons and `:hover` state.
-
----
-
-## License
-
-MIT License. See [LICENSE](LICENSE) for details.
+## Config (`~/.config/barless/config.ini`, `style.css`)
+
+`[dashboard]`: `width margin margin_top section_gap interval radius bg card_alpha` · `clock_align stats_align button_align` ·
+`button_size button_gap columns show_labels terminal tray_buttons tray_icon` · `time_format calendar calendar_side
+calendar_fraction calendar_week_start calendar_font_px accent` · `halftone halftone_skip halftone_dot|fog|sharp|stagger`
+and per section `<section>.halftone_*` (sections `clock sliders stats buttons`; `dot=0` = shader off) ·
+`expand_ms card_delay_ms element_delay_ms` · `sliders slider_gap slider_format slider_icon_pos slider_value_pos volume_* brightness_*`
+· `stats` (`cpu,temp,net,battery`, order = order shown) `stats_gap`.
+
+While expanded the window is named `dashboard` (`window#dashboard`), otherwise `indicator`, so the two looks never mix.
+CSS names: `.card`, `#clock #sliders #stats #buttons`, `#bigclock`, `#calendar .cal-head .cal-today`,
+`scale.slider trough/highlight`, `.slider-icon .slider-val` (`.filled`), `.stat-key .stat-val`, `button.action`.
+`columns=0` fits as many buttons per row as the card is wide.
+
+Removed (ignored): `date_*`, `key_align`, `value_align`, `panel_fill`, `movable`, `*_chart*`, `slider_layout/side/fraction/height/padding/bar_width`,
+`notifications*`, `hide_on_empty`.
+
+## Source
+
+`main.c` args · `common.c` config + defaults + sensors · `indicator.c` the window, indicator, Hyprland events, expand/collapse ·
+`card.c` card sections, halftone, sliders, animation · `tray.c` StatusNotifier host.

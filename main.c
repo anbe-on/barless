@@ -1,7 +1,7 @@
 /* barless - always-on OLED-friendly indicator + empty-workspace dashboard.
  *
- *   barless               run the indicator (and auto-start the dashboard on empty workspaces)
- *   barless --dashboard   run only the dashboard (for designing it)
+ *   barless               run the indicator (it expands into the card on empty workspaces)
+ *   barless --dashboard   run only the card (for designing it)
  *   barless --info        print which sensors/sockets it found, then exit
  *
  * Preview the battery colours without draining the battery:
@@ -33,10 +33,9 @@ static int info(void) {
 }
 
 int main(int argc, char **argv) {
-    gboolean dash = FALSE, spawned = FALSE, want_info = FALSE;
+    gboolean dash = FALSE, want_info = FALSE;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--dashboard")) dash = TRUE;
-        else if (!strcmp(argv[i], "--spawned")) spawned = TRUE;      /* internal: started by the indicator */
         else if (!strcmp(argv[i], "--info")) want_info = TRUE;
         else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) { cfg_load(); usage(); return 0; }
     }
@@ -44,5 +43,6 @@ int main(int argc, char **argv) {
     cfg_load();
     if (want_info) return info();
     css_init();
-    return dash ? dashboard_run(spawned) : indicator_run();
+    if (dash) indicator_demo();
+    return indicator_run();
 }
