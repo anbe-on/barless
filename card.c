@@ -853,6 +853,25 @@ static GtkWidget *clock_build(void) {
 /* ================================================================== */
 /* Stats on one line: cpu 12%  temp 54°C  ▼ 0 B/s  ▲ 0 B/s            */
 /* ================================================================== */
+/* Nerd Font glyph in front of cpu / temp / battery; [dashboard] cpu_icon= temp_icon= battery_icon= (empty = the word) */
+static char *stat_icon(const char *key, const char *def_icon, const char *word) {
+    char opt[32];
+    snprintf(opt, sizeof opt, "%s_icon", key);
+    char *ic = cfg_str("dashboard", opt, def_icon);
+    if (!*ic) { g_free(ic); ic = g_strdup(word); }
+    return ic;
+}
+
+/* fixed width: at most 4 characters (0B 12K 1.5M 999M), so the line never changes width */
+static void fmt_rate(double bps, char *out, size_t len) {
+    static const char u[] = "BKMG";
+    int i = 0;
+    double v = bps < 0 ? 0 : bps;
+    while (v >= 999.5 && i < 3) { v /= 1024.0; i++; }
+    if (i > 0 && v < 9.95) snprintf(out, len, "%.1f%c", v, u[i]);
+    else snprintf(out, len, "%.0f%c", v, u[i]);
+}
+
 static GtkWidget *stat_item(GtkWidget *flow, const char *key, const char *label, GtkWidget **val) {
     GtkWidget *item = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     char cls[48];
@@ -864,6 +883,8 @@ static GtkWidget *stat_item(GtkWidget *flow, const char *key, const char *label,
         gtk_box_pack_start(GTK_BOX(item), k, FALSE, FALSE, 0);
     }
     *val = gtk_label_new("-");
+    gtk_label_set_xalign(GTK_LABEL(*val), 0.0f);
+    gtk_label_set_width_chars(GTK_LABEL(*val), !strcmp(key, "net") ? 12 : !strcmp(key, "battery") ? 12 : !strcmp(key, "temp") ? 3 : 4);   /* constant width: no jumping */
     gtk_style_context_add_class(gtk_widget_get_style_context(*val), "stat-val");
     gtk_style_context_add_class(gtk_widget_get_style_context(*val), cls);
     gtk_box_pack_start(GTK_BOX(item), *val, FALSE, FALSE, 0);
@@ -876,15 +897,17 @@ static GtkWidget *stats_build(void) {
     GtkWidget *flow = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, MAX(0, cfg_int("dashboard", "stats_gap", 16)));   /* one line */
     gtk_widget_set_halign(flow, align_cfg("stats_align", "left"));
     w_cpu = w_temp = w_net = w_bat = NULL;
-    char *stats_s = cfg_str("dashboard", "stats", "cpu,temp,net");
+    char *stats_s = cfg_str("dashboard", "stats", "cpu,temp,net,battery");
     char **stats = g_strsplit_set(stats_s, ", ", -1);
     int n = 0;
     for (char **st = stats; *st; st++) {
         if (!**st) continue;
-        if (!g_ascii_strcasecmp(*st, "cpu") && !w_cpu) { stat_item(flow, "cpu", "cpu", &w_cpu); n++; }
-        else if (!g_ascii_strcasecmp(*st, "temp") && !w_temp) { stat_item(flow, "temp", "temp", &w_temp); n++; }
-        else if (!g_ascii_strcasecmp(*st, "battery") && !w_bat) { stat_item(flow, "battery", "bat", &w_bat); n++; }
+        char *ic = NULL;
+        if (!g_ascii_strcasecmp(*st, "cpu") && !w_cpu) { ic = stat_icon("cpu", "\xef\x92\xbc", "cpu"); stat_item(flow, "cpu", ic, &w_cpu); n++; }
+        else if (!g_ascii_strcasecmp(*st, "temp") && !w_temp) { ic = stat_icon("temp", "\xef\x8b\x89", "temp"); stat_item(flow, "temp", ic, &w_temp); n++; }
+        else if (!g_ascii_strcasecmp(*st, "battery") && !w_bat) { ic = stat_icon("battery", "\xf3\xb0\x81\xb9", "bat"); stat_item(flow, "battery", ic, &w_bat); n++; }
         else if (!g_ascii_strcasecmp(*st, "net") && !w_net) { stat_item(flow, "net", NULL, &w_net); n++; }
+        g_free(ic);
     }
     g_strfreev(stats);
     g_free(stats_s);
@@ -967,16 +990,16 @@ static gboolean card_tick(gpointer d) {
     if (w_cpu) { snprintf(b, sizeof b, "%d%%", cpu_read()); gtk_label_set_text(GTK_LABEL(w_cpu), b); }
     if (w_temp) {
         int tv = temp_read();
-        if (tv >= 0) snprintf(b, sizeof b, "%d\xc2\xb0""C", tv); else snprintf(b, sizeof b, "n/a");
+        if (tv >= 0) snprintf(b, sizeof b, "%d\xc2\xb0", tv); else snprintf(b, sizeof b, "n/a");
         gtk_label_set_text(GTK_LABEL(w_temp), b);
     }
     if (w_net) {
         double down = 0, up = 0;
         char ds[32], us[32];
         net_read(&down, &up);
-        fmt_speed(down, ds, sizeof ds);
-        fmt_speed(up, us, sizeof us);
-        snprintf(b, sizeof b, "\xe2\x96\xbc %s \xe2\x96\xb2 %s", g_strstrip(ds), g_strstrip(us));   /* down = download, up = upload */
+        fmt_rate(down, ds, sizeof ds);
+        fmt_rate(up, us, sizeof us);
+        snprintf(b, sizeof b, "\xe2\x96\xbc %-4s \xe2\x96\xb2 %-4s", ds, us);   /* down = download, up = upload */
         gtk_label_set_text(GTK_LABEL(w_net), b);
     }
     if (w_bat) {
@@ -984,7 +1007,7 @@ static gboolean card_tick(gpointer d) {
         bat_read(&bat);
         if (!bat.present) snprintf(b, sizeof b, "none");
         else if (bat.charging) snprintf(b, sizeof b, "%d%% \xe2\x96\xb2 %.1fW", bat.cap, bat.watts);
-        else if (bat.discharging) snprintf(b, sizeof b, "%d%% \xe2\x96\xbc %.1fW %s", bat.cap, bat.watts, bat.rem);
+        else if (bat.discharging) snprintf(b, sizeof b, "%d%% \xe2\x96\xbc %.1fW", bat.cap, bat.watts);
         else snprintf(b, sizeof b, "%d%%", bat.cap);
         gtk_label_set_text(GTK_LABEL(w_bat), b);
         GtkStyleContext *sc = gtk_widget_get_style_context(w_bat);
