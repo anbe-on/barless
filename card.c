@@ -23,6 +23,7 @@
 /* widgets that card_tick() refreshes */
 static GtkWidget *w_clock, *w_cpu, *w_temp, *w_net, *w_bat;
 static GtkWidget *bgrid = NULL;
+static gboolean embedded = FALSE;                          /* the card sits inside the launcher */
 static GList *user_buttons = NULL;
 static gboolean tray_as_buttons = TRUE;
 
@@ -87,6 +88,9 @@ static void on_tray_changed(int n) {
     relayout_button_grid();
 }
 
+static void (*embed_done)(void) = NULL;                    /* set while the card sits inside the launcher */
+static gboolean embed_done_idle(gpointer d) { (void)d; if (embed_done) embed_done(); return G_SOURCE_REMOVE; }
+
 static void on_button_clicked(GtkButton *b, gpointer cmd) {
     (void)b;
     GError *e = NULL;
@@ -94,6 +98,8 @@ static void on_button_clicked(GtkButton *b, gpointer cmd) {
         g_printerr("barless: cannot run '%s': %s\n", (const char *)cmd, e->message);
         g_error_free(e);
     }
+    /* inside the launcher: a button closes it (unless it is the launcher button itself, which toggles) */
+    if (embed_done && !strstr((const char *)cmd, "--launcher")) g_idle_add(embed_done_idle, NULL);
 }
 static void free_cmd(gpointer d, GClosure *c) { (void)c; g_free(d); }
 
@@ -335,11 +341,19 @@ static int elem_cmp(gconstpointer a, gconstpointer b) {
     return bx - ax;
 }
 
+/* when an element of a section starts, ms into the film. Inside the launcher the whole stagger of one section is capped, so a long calendar cannot keep the card half empty */
+static double elem_start(const Section *c, guint j) {
+    double st = j * (double)elem_delay;
+    guint n = c->elems ? c->elems->len : 0;
+    if (embedded && n && n * (double)elem_delay > 200.0) st = j * 200.0 / n;
+    return anim_ms * 0.5 + c->index * (embedded ? MIN(card_delay, 35) : card_delay) + st;
+}
+
 static double anim_total(void) {
     double t = 0;
     for (guint i = 0; sections && i < sections->len; i++) {
         Section *c = g_ptr_array_index(sections, i);
-        double end = anim_ms * 0.5 + c->index * card_delay + (c->elems ? c->elems->len : 0) * elem_delay + anim_ms * 0.6;
+        double end = elem_start(c, c->elems ? c->elems->len : 0) + anim_ms * 0.6;
         t = MAX(t, end);
     }
     return MAX(t, (double)anim_ms) + 40;
@@ -351,7 +365,7 @@ static void anim_apply(void) {
     for (guint i = 0; sections && i < sections->len; i++) {
         Section *c = g_ptr_array_index(sections, i);
         for (guint j = 0; c->elems && j < c->elems->len; j++) {
-            double es = anim_ms * 0.5 + c->index * card_delay + j * elem_delay;
+            double es = elem_start(c, j);
             double o = anim_now >= 1e8 ? 1.0 : ease_out((anim_now - es) / (anim_ms * 0.6));
             gtk_widget_set_opacity(g_ptr_array_index(c->elems, j), o);
         }
@@ -426,6 +440,7 @@ static void cal_size_allocate(GtkWidget *w, GdkRectangle *a, gpointer d) {
 static GtkWidget *calendar_build(void) {
     cal_week_start = g_ascii_strncasecmp(cfg_str("dashboard", "calendar_week_start", "sunday"), "mon", 3) ? 0 : 1;
     cal_px_cfg = cfg_int("dashboard", "calendar_font_px", 0);
+    cal_px = 0;                                              /* new labels: the size must be applied again */
     cal_grid = gtk_grid_new();
     gtk_widget_set_name(cal_grid, "calendar");
     gtk_grid_set_column_homogeneous(GTK_GRID(cal_grid), TRUE);
@@ -781,7 +796,7 @@ static void sliders_stop(void) {
     n_sliders = 0;
 }
 /* accent colour for highlights: [dashboard] accent=, else the Omarchy theme's colors.toml, else the foreground */
-static char *accent_color(void) {
+char *accent_color(void) {
     char *c = cfg_str("dashboard", "accent", NULL);
     if (c && *c) return c;
     g_free(c);
@@ -1104,7 +1119,16 @@ static gboolean anim_begin(gpointer d) {                   /* after the first fr
     return G_SOURCE_REMOVE;
 }
 
+static gboolean standalone = FALSE;
+static guint embed_tick = 0;
+static GtkWidget *embed_box = NULL;
+static gboolean film_ready = FALSE;
+static int film_calls = 0;
+static double film_t0 = 0;
+void card_set_standalone(void) { standalone = TRUE; }         /* no tray in a launcher process of its own */
+
 static void card_open_now(void) {
+    if (embedded) return;                                   /* the launcher shows the card */
     GdkRectangle g = { 0, 0, 1920, 1080 };
     GdkMonitor *m = gdk_display_get_monitor(gdk_display_get_default(), 0);
     if (m) gdk_monitor_get_geometry(m, &g);
@@ -1245,6 +1269,100 @@ void card_init(void) {
     }
 
     /* the tray lives for the whole session (apps keep a stable watcher); its buttons are placed in the card when it opens */
+    if (standalone) return;
     if (cfg_bool("dashboard", "tray_buttons", TRUE)) tray_init(NULL, cfg_int("dashboard", "tray_icon", 18), on_tray_changed);
     else tray_init(NULL, 0, NULL);
+}
+
+gboolean card_is_closed(void) { return cstate == CS_CLOSED; }
+
+/* ================================================================== */
+/* The card inside the launcher panel (no window of its own)           */
+/* ================================================================== */
+static gboolean sec_has(char **v, const char *n) {
+    for (; *v; v++) if (!g_ascii_strcasecmp(*v, n)) return TRUE;
+    return FALSE;
+}
+
+GtkWidget *card_embed_new(int inner_w, const char *secs, void (*done)(void)) {
+    if (cstate != CS_CLOSED || embedded) return NULL;
+    card_init();
+    embedded = TRUE;
+    embed_done = done;
+    card_inner_w = inner_w;
+    anim_now = anim_ms > 0 ? 0.0 : 1e9;                      /* the launcher plays the same film as the card */
+    film_ready = FALSE;
+    film_calls = 0;
+    char **v = g_strsplit_set(secs && *secs ? secs : "clock,sliders,stats,buttons", ", ", -1);
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, MAX(0, cfg_int("dashboard", "section_gap", 12)));
+    gtk_widget_set_name(box, "lcard");
+    gtk_widget_set_size_request(box, inner_w, -1);
+    GtkWidget *w;
+    if (sec_has(v, "clock")) { w = clock_build(); gtk_box_pack_start(GTK_BOX(box), w, FALSE, FALSE, 0); section_new(w, "clock"); }
+    if (sec_has(v, "sliders") && (w = sliders_build())) { gtk_box_pack_start(GTK_BOX(box), w, FALSE, FALSE, 0); section_new(w, "sliders"); }
+    if (sec_has(v, "stats") && (w = stats_build())) { gtk_box_pack_start(GTK_BOX(box), w, FALSE, FALSE, 0); section_new(w, "stats"); }
+    if (sec_has(v, "buttons") && (w = buttons_build())) { gtk_box_pack_start(GTK_BOX(box), w, FALSE, FALSE, 0); section_new(w, "buttons"); }
+    g_strfreev(v);
+    embed_box = box;
+    if (anim_ms > 0) gtk_widget_set_opacity(box, 0.0);        /* until the film has its elements */
+    card_tick(GINT_TO_POINTER(1));
+    embed_tick = g_timeout_add_seconds(1, card_tick, NULL);
+    return box;
+}
+
+/* The launcher drives the card's own film: te = ms since the panel started to open.
+   Returns when the next element after the card (the search box) may start; *total = when the card's own film ends. */
+double card_embed_film(double te, double *total, int *edelay) {
+    if (!embedded || !sections) { if (total) *total = 0; return anim_ms * 0.5; }
+    if (edelay) *edelay = elem_delay;
+    if (total) *total = anim_total();
+    double next = anim_ms * 0.5 + sections->len * MIN(card_delay, 35);
+    if (anim_ms <= 0) return 0;
+    if (!film_ready) {
+        if (++film_calls < 3) return next;                    /* wait until the panel has been laid out */
+        for (guint i = 0; i < sections->len; i++) {
+            Section *c = g_ptr_array_index(sections, i);
+            if (c->elems) g_ptr_array_free(c->elems, TRUE);
+            c->elems = g_ptr_array_new();
+            collect_elems(c->w, c->elems);
+            sort_root = embed_box;
+            g_ptr_array_sort(c->elems, elem_cmp);
+        }
+        film_ready = TRUE;
+        film_t0 = te;                                        /* the card's film starts when its elements are known */
+        anim_now = 0;
+        anim_apply();
+        gtk_widget_set_opacity(embed_box, 1.0);
+    }
+    anim_now = te - film_t0;
+    anim_apply();
+    return next;
+}
+
+void card_embed_film_end(void) {
+    if (!embedded) return;
+    anim_now = 1e9;
+    if (film_ready) anim_apply();
+    if (embed_box) gtk_widget_set_opacity(embed_box, 1.0);
+}
+
+int card_embed_expand_ms(void) { return anim_ms; }
+
+void card_embed_free(void) {                                 /* before the panel is destroyed: the tray buttons must be taken out first */
+    if (!embedded) return;
+    embedded = FALSE;
+    embed_done = NULL;
+    embed_box = NULL;
+    if (embed_tick) { g_source_remove(embed_tick); embed_tick = 0; }
+    sliders_stop();
+    GList *tw = tray_get_widgets();
+    for (GList *l = tw; l; l = l->next) detach(GTK_WIDGET(l->data));
+    g_list_free(tw);
+    for (GList *l = user_buttons; l; l = l->next) detach(GTK_WIDGET(l->data));
+    g_list_free_full(user_buttons, g_object_unref);
+    user_buttons = NULL;
+    bgrid = NULL;
+    w_clock = w_cpu = w_temp = w_net = w_bat = clock_box = NULL;
+    cal_grid = NULL;
+    if (sections) { g_ptr_array_free(sections, TRUE); sections = NULL; }
 }

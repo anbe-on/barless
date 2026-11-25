@@ -25,9 +25,6 @@ static int bat_mid, bat_low, temp_warm, temp_hot;
 static gboolean show_temp, show_watts, bat_square, bat_arrow;
 static gboolean expanded = FALSE, demo = FALSE;
 static char *bat_col_ok = NULL, *bat_col_mid = NULL, *bat_col_low = NULL;
-static int reveal_delay = 250, reveal_ms = 150;
-static guint reveal_id = 0;
-static gint64 reveal_t0 = 0;
 
 /* ================================================================== */
 /* Hyprland IPC (plain unix sockets, no deps)                          */
@@ -364,10 +361,17 @@ static gboolean on_enter(GtkWidget *w, GdkEventCrossing *e, gpointer d) {
     return FALSE;
 }
 
+/* After collapsing, the indicator fades in from 0 once the compositor has (probably) finished resizing the
+ * surface, so a layer-resize animation of Hyprland happens while it is still invisible.
+ * [indicator] reveal_delay_ms (stay invisible) and reveal_ms (fade-in length). */
+static int reveal_delay = 250, reveal_ms = 150;
+static guint reveal_id = 0;
+static gint64 reveal_t0 = 0;
+
 static gboolean reveal_step(gpointer d) {
     (void)d;
     double t = (g_get_monotonic_time() - reveal_t0) / 1000.0 - reveal_delay;
-    if (t < 0) return G_SOURCE_CONTINUE;
+    if (t < 0) return G_SOURCE_CONTINUE;                   /* window is unmapped: nothing at all is on screen */
     if (!gtk_widget_get_visible(win)) gtk_widget_show(win);
     double o = t <= 0 ? 0.0 : (reveal_ms <= 0 || t >= reveal_ms) ? 1.0 : t / reveal_ms;
     gtk_widget_set_opacity(row, o);
@@ -382,7 +386,7 @@ GtkWidget *indicator_expand(GtkWidget *card, int top, int right) {
     expanded = TRUE;
     if (reveal_id) { g_source_remove(reveal_id); reveal_id = 0; }
     gtk_widget_set_opacity(row, 1.0);
-    gtk_widget_show(win);
+    gtk_widget_show(win);                                  /* may still be unmapped from the last collapse */
     if (dodge_id) { g_source_remove(dodge_id); dodge_id = 0; }
     dodged = FALSE;
     gtk_layer_set_anchor(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_RIGHT, TRUE);
@@ -396,20 +400,96 @@ GtkWidget *indicator_expand(GtkWidget *card, int top, int right) {
     return win;
 }
 
-void indicator_collapse(GtkWidget *card) {
-    expanded = FALSE;
-    if (card) gtk_widget_destroy(card);
+static void restore_indicator(void) {
     gtk_widget_set_name(win, "indicator");
     gtk_layer_set_layer(GTK_WINDOW(win), GTK_LAYER_SHELL_LAYER_TOP);
     apply_margins();
     gtk_widget_set_opacity(row, reveal_delay > 0 || reveal_ms > 0 ? 0.0 : 1.0);
     gtk_widget_show(row);
-    gtk_window_resize(GTK_WINDOW(win), 1, 1);
+    gtk_window_resize(GTK_WINDOW(win), 1, 1);              /* shrink back to the indicator */
     if (reveal_delay > 0 || reveal_ms > 0) {
-        gtk_widget_hide(win);
+        gtk_widget_hide(win);                              /* unmapped while it shrinks: no stale / blurred / dark surface */
         reveal_t0 = g_get_monotonic_time();
         if (!reveal_id) reveal_id = g_timeout_add(16, reveal_step, NULL);
     }
+}
+
+void indicator_collapse(GtkWidget *card) {
+    expanded = FALSE;
+    if (card) gtk_widget_destroy(card);
+    restore_indicator();
+}
+
+/* ---- launcher: the window covers the screen while it is open, the indicator row travels across it ---- */
+GtkWidget *indicator_row(void) { return row; }
+void indicator_recheck(void) { schedule_recheck(150); }
+
+GtkWidget *indicator_overlay_begin(GtkWidget *stage, int *mw, int *mh, int *x0, int *y0, int *rw, int *rh) {
+    GdkDisplay *d = gdk_display_get_default();
+    GdkWindow *gw = gtk_widget_get_window(win);
+    GdkMonitor *m = gw ? gdk_display_get_monitor_at_window(d, gw) : NULL;
+    if (!m) m = gdk_display_get_monitor(d, 0);
+    GdkRectangle g = { 0, 0, 1920, 1080 };
+    if (m) gdk_monitor_get_geometry(m, &g);
+    *mw = g.width; *mh = g.height;
+    if (reveal_id) { g_source_remove(reveal_id); reveal_id = 0; }
+    if (dodge_id) { g_source_remove(dodge_id); dodge_id = 0; }
+    gboolean was_dodged = dodged;
+    dodged = FALSE;
+    gtk_widget_set_opacity(row, 1.0);
+    gtk_widget_show(win);
+    int nat = 0, nath = 0;
+    gtk_widget_get_preferred_width(row, NULL, &nat);
+    gtk_widget_get_preferred_height(row, NULL, &nath);
+    *rw = nat; *rh = nath;
+    int mr = gtk_layer_get_margin(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_RIGHT);
+    *x0 = was_dodged ? (g.width - nat) / 2 : g.width - mr - nat;
+    *y0 = gtk_layer_get_margin(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_TOP);
+    expanded = TRUE;
+    g_object_ref(row);
+    gtk_container_remove(GTK_CONTAINER(root), row);
+    gtk_fixed_put(GTK_FIXED(stage), row, *x0, *y0);
+    g_object_unref(row);
+    gtk_widget_set_size_request(stage, g.width, g.height);
+    gtk_box_pack_start(GTK_BOX(root), stage, TRUE, TRUE, 0);
+    gtk_layer_set_anchor(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_RIGHT, TRUE);
+    gtk_layer_set_anchor(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_LEFT, TRUE);
+    gtk_layer_set_anchor(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_BOTTOM, TRUE);
+    gtk_layer_set_margin(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_TOP, 0);
+    gtk_layer_set_margin(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_RIGHT, 0);
+    gtk_layer_set_exclusive_zone(GTK_WINDOW(win), -1);
+    gtk_layer_set_layer(GTK_WINDOW(win), GTK_LAYER_SHELL_LAYER_OVERLAY);
+    gtk_layer_set_keyboard_mode(GTK_WINDOW(win), GTK_LAYER_SHELL_KEYBOARD_MODE_EXCLUSIVE);
+    set_input(TRUE);
+    return win;
+}
+
+void indicator_overlay_arrived(void) {                     /* the row reached the middle: it is replaced by the panel */
+    gtk_widget_set_name(win, "launcher");                  /* CSS: window#launcher, so #indicator rules do not hit the panel */
+    gtk_widget_hide(row);
+}
+
+void indicator_overlay_end(GtkWidget *stage) {
+    expanded = FALSE;
+    g_object_ref(row);
+    gtk_container_remove(GTK_CONTAINER(stage), row);
+    gtk_widget_destroy(stage);                             /* the panel and everything in it */
+    gtk_box_pack_start(GTK_BOX(root), row, FALSE, FALSE, 0);
+    g_object_unref(row);
+    gtk_layer_set_keyboard_mode(GTK_WINDOW(win), GTK_LAYER_SHELL_KEYBOARD_MODE_NONE);
+    gtk_layer_set_exclusive_zone(GTK_WINDOW(win), 0);
+    gtk_layer_set_anchor(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_LEFT, FALSE);
+    gtk_layer_set_anchor(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_BOTTOM, FALSE);
+    gtk_layer_set_anchor(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_RIGHT, TRUE);
+    restore_indicator();
+}
+
+/* `barless --launcher` sends SIGUSR1 to the running instance; the pid lives in $XDG_RUNTIME_DIR/barless.pid */
+static gboolean on_usr1(gpointer d) { (void)d; launcher_toggle(); return G_SOURCE_CONTINUE; }
+
+char *barless_pidfile(void) {
+    const char *rd = g_getenv("XDG_RUNTIME_DIR");
+    return g_build_filename(rd && *rd ? rd : g_get_tmp_dir(), "barless.pid", NULL);
 }
 
 static gboolean quit_cb(gpointer d) {
@@ -534,6 +614,12 @@ int indicator_run(void) {
     root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_box_pack_start(GTK_BOX(root), row, FALSE, FALSE, 0);
     gtk_container_add(GTK_CONTAINER(win), root);
+    {   /* `#indicator box { ... }` in style.css would also paint this plain wrapper (it covers the screen while the launcher is open) */
+        GtkCssProvider *rp = gtk_css_provider_new();
+        gtk_css_provider_load_from_data(rp, "box { background-color: transparent; background-image: none; border: none; padding: 0; margin: 0; }", -1, NULL);
+        gtk_style_context_add_provider(gtk_widget_get_style_context(root), GTK_STYLE_PROVIDER(rp), GTK_STYLE_PROVIDER_PRIORITY_USER + 100);
+        g_object_unref(rp);
+    }
 
     gtk_widget_add_events(win, GDK_ENTER_NOTIFY_MASK);
     g_signal_connect(win, "enter-notify-event", G_CALLBACK(on_enter), NULL);
@@ -554,6 +640,12 @@ int indicator_run(void) {
 
     g_unix_signal_add(SIGTERM, quit_cb, NULL);
     g_unix_signal_add(SIGINT, quit_cb, NULL);
+    g_unix_signal_add(SIGUSR1, on_usr1, NULL);
+    char *pf = barless_pidfile(), *pid = g_strdup_printf("%d\n", (int)getpid());
+    g_file_set_contents(pf, pid, -1, NULL);
+    g_free(pid);
     gtk_main();
+    unlink(pf);
+    g_free(pf);
     return 0;
 }
