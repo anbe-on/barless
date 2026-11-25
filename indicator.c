@@ -424,7 +424,9 @@ void indicator_collapse(GtkWidget *card) {
 GtkWidget *indicator_row(void) { return row; }
 void indicator_recheck(void) { schedule_recheck(150); }
 
-GtkWidget *indicator_overlay_begin(GtkWidget *stage, int *mw, int *mh, int *x0, int *y0, int *rw, int *rh) {
+static gboolean row_dim = FALSE;
+gboolean indicator_row_dim(void) { return row_dim; }
+static GtkWidget *stage_begin(gboolean card, GtkWidget *stage, int *mw, int *mh, int *x0, int *y0, int *rw, int *rh) {
     GdkDisplay *d = gdk_display_get_default();
     GdkWindow *gw = gtk_widget_get_window(win);
     GdkMonitor *m = gw ? gdk_display_get_monitor_at_window(d, gw) : NULL;
@@ -432,11 +434,12 @@ GtkWidget *indicator_overlay_begin(GtkWidget *stage, int *mw, int *mh, int *x0, 
     GdkRectangle g = { 0, 0, 1920, 1080 };
     if (m) gdk_monitor_get_geometry(m, &g);
     *mw = g.width; *mh = g.height;
+    row_dim = reveal_id != 0;                              /* the indicator is not visible right now (it is about to fade back in): the shape starts empty */
     if (reveal_id) { g_source_remove(reveal_id); reveal_id = 0; }
     if (dodge_id) { g_source_remove(dodge_id); dodge_id = 0; }
     gboolean was_dodged = dodged;
     dodged = FALSE;
-    gtk_widget_set_opacity(row, 1.0);
+    gtk_widget_set_opacity(row, row_dim ? 0.0 : 1.0);
     gtk_widget_show(win);
     int nat = 0, nath = 0;
     gtk_widget_get_preferred_width(row, NULL, &nat);
@@ -458,11 +461,28 @@ GtkWidget *indicator_overlay_begin(GtkWidget *stage, int *mw, int *mh, int *x0, 
     gtk_layer_set_margin(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_TOP, 0);
     gtk_layer_set_margin(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_RIGHT, 0);
     gtk_layer_set_exclusive_zone(GTK_WINDOW(win), -1);
-    gtk_layer_set_layer(GTK_WINDOW(win), GTK_LAYER_SHELL_LAYER_OVERLAY);
-    gtk_layer_set_keyboard_mode(GTK_WINDOW(win), GTK_LAYER_SHELL_KEYBOARD_MODE_EXCLUSIVE);
+    gtk_layer_set_layer(GTK_WINDOW(win), card ? GTK_LAYER_SHELL_LAYER_BOTTOM : GTK_LAYER_SHELL_LAYER_OVERLAY);
+    gtk_layer_set_keyboard_mode(GTK_WINDOW(win), card ? GTK_LAYER_SHELL_KEYBOARD_MODE_NONE : GTK_LAYER_SHELL_KEYBOARD_MODE_EXCLUSIVE);
+    if (card) gtk_widget_set_name(win, "dashboard");
     set_input(TRUE);
     return win;
 }
+GtkWidget *indicator_overlay_begin(GtkWidget *stage, int *mw, int *mh, int *x0, int *y0, int *rw, int *rh) {
+    return stage_begin(FALSE, stage, mw, mh, x0, y0, rw, rh);
+}
+/* the card as a child of the same screen-sized stage (bottom layer, no keyboard): its shape can then change freely.
+ * The window takes clicks only where the card is: indicator_card_input(). */
+GtkWidget *indicator_card_begin(GtkWidget *stage, int *mw, int *mh, int *x0, int *y0, int *rw, int *rh) {
+    return stage_begin(TRUE, stage, mw, mh, x0, y0, rw, rh);
+}
+void indicator_card_input(int x, int y, int w, int h) {
+    if (!win) return;
+    cairo_rectangle_int_t r = { x, y, MAX(1, w), MAX(1, h) };
+    cairo_region_t *reg = cairo_region_create_rectangle(&r);
+    gtk_widget_input_shape_combine_region(win, reg);
+    cairo_region_destroy(reg);
+}
+void indicator_overlay_name(void) { gtk_widget_set_name(win, "launcher"); }   /* the row stays; only the CSS name changes */
 
 void indicator_overlay_arrived(void) {                     /* the row reached the middle: it is replaced by the panel */
     gtk_widget_set_name(win, "launcher");                  /* CSS: window#launcher, so #indicator rules do not hit the panel */
@@ -477,6 +497,7 @@ void indicator_overlay_end(GtkWidget *stage) {
     gtk_box_pack_start(GTK_BOX(root), row, FALSE, FALSE, 0);
     g_object_unref(row);
     gtk_layer_set_keyboard_mode(GTK_WINDOW(win), GTK_LAYER_SHELL_KEYBOARD_MODE_NONE);
+    set_input(TRUE);
     gtk_layer_set_exclusive_zone(GTK_WINDOW(win), 0);
     gtk_layer_set_anchor(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_LEFT, FALSE);
     gtk_layer_set_anchor(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_BOTTOM, FALSE);

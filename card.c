@@ -301,13 +301,36 @@ static void section_new(GtkWidget *w, const char *name) {
 /* ================================================================== */
 static GtkWidget *win = NULL, *card_w = NULL;
 
+/* the morph: the card is a child of a screen-sized stage and its shape changes like a fluid, from the indicator to the card and back */
+static Morph cmo;
+static GtkWidget *cstage = NULL;
+static gboolean c_morph = FALSE, cmo_on = FALSE, c_closing = FALSE, c_film_on = FALSE, c_mo_go = FALSE;
+static gint64 cmo_t0 = 0;
+static double cmo_content_a = 1.0;
+static int c_rx0, c_ry0, c_rw, c_rh, c_mon_w;
+
 static double reveal(void) { return anim_now >= 1e8 ? 1.0 : ease_out(anim_now / anim_ms); }
 
 static gboolean card_draw(GtkWidget *w, cairo_t *cr, gpointer d) {
     (void)d;
-    double e = reveal();
+    double e = c_morph ? 1.0 : reveal();
     if (e <= 0.0) return TRUE;
     int W = gtk_widget_get_allocated_width(w), H = gtk_widget_get_allocated_height(w);
+    if (c_morph && cmo_on) {                                 /* the stage draws the shape; the card draws its content, clipped to it */
+        if (!c_film_on) return TRUE;
+        GtkAllocation a;
+        gtk_widget_get_allocation(w, &a);
+        MRect r = morph_rect(&cmo);
+        DrawCtx dc = { w, cr };
+        cairo_save(cr);
+        cairo_rectangle(cr, r.x - a.x, r.y - a.y, r.w, r.h);
+        cairo_clip(cr);
+        if (c_closing) cairo_push_group(cr);
+        gtk_container_forall(GTK_CONTAINER(w), draw_child, &dc);
+        if (c_closing) { cairo_pop_group_to_source(cr); cairo_paint_with_alpha(cr, cmo_content_a); }
+        cairo_restore(cr);
+        return TRUE;
+    }
     cairo_save(cr);
     if (e < 1.0) {                                           /* a square growing diagonally: top-right -> bottom-left */
         cairo_rectangle(cr, W * (1.0 - e), 0, W * e, H * e);
@@ -1043,6 +1066,59 @@ static gint64 last_us = 0;
 static int c_width = 380, c_margin = 12, c_margin_top = 12, c_interval = 5;
 
 static void card_open_now(void);
+static gboolean card_finish(gpointer d);
+
+static gboolean cstage_draw(GtkWidget *w, cairo_t *cr, gpointer d) {
+    (void)w; (void)d;
+    if (cmo_on && card_w) morph_draw_shape(card_w, cr, morph_rect(&cmo));
+    return FALSE;
+}
+
+/* every frame of the morph: the indicator row rides on the shape and fades (in again on the way back); a changed card size retargets */
+static void cmo_frame(gpointer d, gboolean settled) {
+    (void)d;
+    if (!card_w || !cstage) return;
+    GtkWidget *row = indicator_row();
+    double T = MAX(60, morph_ms()), tm = (g_get_monotonic_time() - cmo_t0) / 1000.0;
+    MRect r = morph_rect(&cmo);
+    double o = c_closing ? 0.0 : (indicator_row_dim() ? 0.0 : 1.0 - ease_out(tm / (0.35 * T)));   /* no text flashes on the way back */
+    gtk_widget_set_opacity(row, o);
+    gtk_fixed_move(GTK_FIXED(cstage), row, (int)(r.x + (r.w - c_rw) / 2), (int)r.y);
+    if (!c_closing && o <= 0.0) gtk_widget_hide(row);
+    if (c_closing) {
+        cmo_content_a = 1.0 - ease_out(tm / (0.3 * T));
+        gtk_widget_queue_draw(card_w);
+        if (settled && !finish_src) finish_src = g_idle_add(card_finish, NULL);
+        return;
+    }
+    if (!c_mo_go) return;
+    GtkAllocation a;
+    gtk_widget_get_allocation(card_w, &a);
+    if (a.width > 1 && (fabs(cmo.t[0] - a.x) > 0.5 || fabs(cmo.t[1] - a.y) > 0.5 || fabs(cmo.t[2] - (a.x + a.width)) > 0.5 || fabs(cmo.t[3] - (a.y + a.height)) > 0.5)) {
+        morph_go(&cmo, (MRect){ a.x, a.y, a.width, a.height });
+        return;
+    }
+    if (settled) { cmo_on = FALSE; gtk_widget_hide(row); gtk_widget_queue_draw(cstage); gtk_widget_queue_draw(card_w); }
+}
+
+/* the card sits against the right margin whatever width its content asks for; the window takes clicks only on the card */
+static guint place_src = 0;
+static gboolean card_place(gpointer d) {
+    (void)d;
+    place_src = 0;
+    if (!card_w || !cstage) return G_SOURCE_REMOVE;
+    GtkAllocation a;
+    gtk_widget_get_allocation(card_w, &a);
+    if (a.width <= 1) return G_SOURCE_REMOVE;
+    int nx = c_mon_w - c_margin - a.width;
+    if (nx != a.x) gtk_fixed_move(GTK_FIXED(cstage), card_w, nx, c_margin_top);
+    indicator_card_input(nx, c_margin_top, a.width, a.height);
+    return G_SOURCE_REMOVE;
+}
+static void on_card_alloc(GtkWidget *w, GdkRectangle *a, gpointer d) {
+    (void)w; (void)a; (void)d;
+    if (!place_src) place_src = g_idle_add(card_place, NULL);
+}
 
 static gboolean card_finish(gpointer d) {                  /* the closing film ended: take everything down */
     (void)d;
@@ -1058,7 +1134,14 @@ static gboolean card_finish(gpointer d) {                  /* the closing film e
     for (GList *l = user_buttons; l; l = l->next) detach(GTK_WIDGET(l->data));
     g_list_free_full(user_buttons, g_object_unref);
     user_buttons = NULL;
-    indicator_collapse(card_w);                            /* the same window turns back into the indicator */
+    if (cstage) {                                          /* the morph: the stage (and the card in it) goes, the indicator returns */
+        morph_stop(&cmo);
+        cmo_on = FALSE; c_closing = FALSE; c_film_on = FALSE; c_mo_go = FALSE;
+        if (place_src) { g_source_remove(place_src); place_src = 0; }
+        GtkWidget *st = cstage;
+        cstage = NULL;
+        indicator_overlay_end(st);
+    } else indicator_collapse(card_w);                     /* the same window turns back into the indicator */
     card_w = bgrid = NULL;
     w_clock = w_cpu = w_temp = w_net = w_bat = clock_box = NULL;
     cal_grid = NULL;
@@ -1114,6 +1197,15 @@ static gboolean anim_begin(gpointer d) {                   /* after the first fr
         g_ptr_array_sort(c->elems, elem_cmp);
     }
     anim_len = anim_total();
+    if (c_morph) {                                          /* the card is laid out: the shape goes from the indicator to it */
+        GtkAllocation a;
+        gtk_widget_get_allocation(card_w, &a);
+        anim_apply();                                       /* everything at opacity 0 before the content may draw */
+        c_film_on = TRUE;
+        c_mo_go = TRUE;
+        cmo_t0 = g_get_monotonic_time();
+        morph_go(&cmo, (MRect){ a.x, a.y, a.width, a.height });
+    }
     if (anim_ms > 0) { anim_dir = 1; anim_run(); }
     else { anim_now = 1e9; anim_apply(); cstate = CS_OPEN; }
     return G_SOURCE_REMOVE;
@@ -1139,17 +1231,33 @@ static void card_open_now(void) {
     gtk_widget_set_size_request(card_w, c_width, -1);
     gtk_widget_set_valign(card_w, GTK_ALIGN_START);
     g_signal_connect(card_w, "draw", G_CALLBACK(card_draw), NULL);
+    c_morph = morph_ms() > 0;
+    c_closing = FALSE; c_film_on = FALSE; c_mo_go = FALSE;
+    if (c_morph) {
+        cstage = gtk_fixed_new();
+        int mh;
+        win = indicator_card_begin(cstage, &c_mon_w, &mh, &c_rx0, &c_ry0, &c_rw, &c_rh);
+        gtk_fixed_put(GTK_FIXED(cstage), card_w, c_mon_w - c_margin - c_width, c_margin_top);
+        g_signal_connect(card_w, "size-allocate", G_CALLBACK(on_card_alloc), NULL);
+        g_signal_connect(cstage, "draw", G_CALLBACK(cstage_draw), NULL);
+        morph_init(&cmo, cstage, cmo_frame, NULL);
+        morph_jump(&cmo, (MRect){ c_rx0, c_ry0, c_rw, c_rh });   /* the shape starts exactly where the indicator is */
+        cmo_on = TRUE;
+        indicator_card_input(c_rx0, c_ry0, c_rw, c_rh);
+        gtk_widget_show_all(cstage);
+    } else
     win = indicator_expand(card_w, c_margin_top, c_margin);   /* the ONE window: indicator row hides, the card takes its place */
     GtkBorder pad;
     gtk_style_context_get_padding(gtk_widget_get_style_context(card_w), GTK_STATE_FLAG_NORMAL, &pad);
     card_inner_w = c_width - pad.left - pad.right;
 
-    anim_now = anim_ms > 0 ? 0.0 : 1e9;
+    anim_now = anim_ms > 0 ? (c_morph ? -morph_ms() * 0.55 : 0.0) : 1e9;   /* with the morph the content waits until the shape has nearly arrived */
     anim_dir = 1;
     cstate = CS_OPENING;
     card_build(card_w);
     tray_set_origin(g.x + g.width - c_margin - c_width, g.y + c_margin_top);   /* where tray menus open */
-    gtk_widget_show_all(card_w);
+    if (!c_morph) gtk_widget_show_all(card_w);
+    else gtk_widget_show_all(cstage);
     begin_src = g_idle_add_full(G_PRIORITY_LOW, anim_begin, NULL, NULL);
     card_tick(GINT_TO_POINTER(1));
     tick_src = g_timeout_add_seconds(1, card_tick, NULL);
@@ -1165,11 +1273,25 @@ void card_open(void) {
     }
 }
 
+static gboolean card_instant = FALSE;
+void card_close_instant(void) { card_instant = TRUE; card_close(); card_instant = FALSE; }   /* the launcher takes the screen: no time for a morph back */
 void card_close(void) {
     switch (cstate) {
     case CS_OPENING: case CS_OPEN:
         cstate = CS_CLOSING;
-        if (!finish_src) finish_src = g_idle_add(card_finish, NULL);   /* no reverse film: the indicator just pops back */
+        if (cstage && !card_instant) {                      /* the shape goes back to the indicator */
+            c_closing = TRUE;
+            cmo_content_a = 1.0;
+            cmo_t0 = g_get_monotonic_time();
+            if (!cmo_on) {
+                GtkAllocation a;
+                gtk_widget_get_allocation(card_w, &a);
+                morph_jump(&cmo, (MRect){ a.x, a.y, a.width, a.height });
+                cmo_on = TRUE;
+            }
+            gtk_widget_hide(indicator_row());
+            morph_go(&cmo, (MRect){ c_rx0, c_ry0, c_rw, c_rh });
+        } else if (!finish_src) finish_src = g_idle_add(card_finish, NULL);   /* no reverse film: the indicator just pops back */
         break;
     default: break;
     }

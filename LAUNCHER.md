@@ -58,6 +58,13 @@ It is as wide as the card ([dashboard] width) unless [launcher] width is set.
 Optional selectors: #lentry, #llist row(:selected), .lkind, #lpreview.
 Keep running barless alive: run it as a systemd user service with Restart=on-failure.
 
+**The shape.** The card and the launcher are one shape that changes position and size like a fluid: it springs out of the
+indicator to its place (and back on Esc, a click outside, or the key again). Each of its four edges is a spring, so it
+stretches towards where it goes and overshoots a little before it settles. `[dashboard] morph_ms` (300) is how long it takes,
+`morph_bounce` (0.5) the overshoot, `morph_stretch` (0.5) the stretch; `morph_ms=0` turns it off and brings back the box
+growing from its corner. While it moves nothing else runs; when it has settled it costs nothing. The window is as big as the screen
+while the shape moves, and for the card for as long as it is shown, but it takes clicks only on the card.
+
 The opening is the card's own film (expand_ms / card_delay_ms / element_delay_ms from [dashboard]): the panel grows from
 the top right, the card's elements fade in one by one, then the search box and the rows.
 

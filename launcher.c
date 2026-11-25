@@ -427,6 +427,11 @@ static gint64 last_us = 0;
 static gboolean ticking = FALSE, intro_done = TRUE;
 static int rx0, ry0, rtx, rty, row_w, row_h;
 static char *chosen = NULL;              /* --dmenu result */
+/* the morph: the panel is one shape that changes position and size, starting as the indicator and ending as the panel */
+static Morph mo;
+static gboolean mo_on = FALSE, closing = FALSE, l_morph = FALSE;
+static gint64 mo_t0 = 0;
+static double mo_delay = 0, mo_content_a = 1.0;
 
 static double ease_out(double t) { t = CLAMP(t, 0.0, 1.0); return 1.0 - (1.0 - t) * (1.0 - t); }
 
@@ -593,6 +598,7 @@ static void pick_bgs(void) {
 }
 
 static void panel_close(void);
+static void panel_close_soft(void);
 static void enter_picker(int mode);
 static void leave_picker(void);
 
@@ -1187,10 +1193,11 @@ static void activate_selected(void) {
 
 static gboolean on_entry_key(GtkWidget *w, GdkEventKey *e, gpointer d) {
     (void)w; (void)d;
+    if (closing) return TRUE;
     last_act = g_get_monotonic_time();
     gboolean ctrl = (e->state & GDK_CONTROL_MASK) != 0;
     switch (e->keyval) {
-    case GDK_KEY_Escape: panel_close(); return TRUE;
+    case GDK_KEY_Escape: panel_close_soft(); return TRUE;
     case GDK_KEY_BackSpace:
         if (pmode && !*gtk_entry_get_text(GTK_ENTRY(entry))) { leave_picker(); return TRUE; }
         break;
@@ -1222,6 +1229,7 @@ static void on_row_activated(GtkListBox *b, GtkListBoxRow *r, gpointer d) {
 static gboolean on_press(GtkWidget *w, GdkEventButton *e, gpointer d) {
     (void)w; (void)d;
     if (lstate == LS_CLOSED || !panel) return FALSE;
+    if (closing) return TRUE;
     last_act = g_get_monotonic_time();
     int ox = 0, oy = 0;
     gdk_window_get_origin(gtk_widget_get_window(host), &ox, &oy);
@@ -1230,41 +1238,89 @@ static gboolean on_press(GtkWidget *w, GdkEventButton *e, gpointer d) {
     gtk_widget_get_allocation(panel, &a);
     int px = 0, py = 0;
     gtk_widget_translate_coordinates(panel, host, 0, 0, &px, &py);
-    if (x < px || x > px + a.width || y < py || y > py + a.height) { panel_close(); return TRUE; }
+    if (x < px || x > px + a.width || y < py || y > py + a.height) { panel_close_soft(); return TRUE; }
     return FALSE;
 }
 
-/* the panel opens like the card does: from its top right corner towards the bottom left.
-   Like the card, it draws itself (background, frame, children): the stock draw ignores a clip for the CSS background. */
 static void draw_kid(GtkWidget *k, gpointer d) { gpointer *p = d; gtk_container_propagate_draw(GTK_CONTAINER(p[0]), k, p[1]); }
-/* the panel opens like the card does: from its top right corner towards the bottom left.
-   Like the card, it draws itself (background, frame, children): the stock draw ignores a clip for the CSS background. */
+
+/* while the shape moves, the stage draws it (background + frame, anywhere on the screen); the panel only draws its content,
+   clipped to the shape. When the shape has settled, the panel draws itself again. */
+static gboolean stage_draw(GtkWidget *w, cairo_t *cr, gpointer d) {
+    (void)w; (void)d;
+    if (mo_on && panel) morph_draw_shape(panel, cr, morph_rect(&mo));
+    return FALSE;
+}
+
 static gboolean panel_draw(GtkWidget *w, cairo_t *cr, gpointer d) {
     (void)d;
     if (p_reveal <= 0.0) return TRUE;
     int W = gtk_widget_get_allocated_width(w), H = gtk_widget_get_allocated_height(w);
+    gpointer p[2] = { w, cr };
+    if (mo_on) {
+        GtkAllocation a;
+        gtk_widget_get_allocation(w, &a);
+        MRect r = morph_rect(&mo);
+        cairo_save(cr);
+        cairo_rectangle(cr, r.x - a.x, r.y - a.y, r.w, r.h);
+        cairo_clip(cr);
+        if (closing) cairo_push_group(cr);
+        gtk_container_forall(GTK_CONTAINER(w), draw_kid, p);
+        if (closing) { cairo_pop_group_to_source(cr); cairo_paint_with_alpha(cr, mo_content_a); }
+        cairo_restore(cr);
+        return TRUE;
+    }
     cairo_save(cr);
-    if (p_reveal < 1.0) {
+    if (p_reveal < 1.0) {                                    /* morph off: the box grows from its top right corner */
         cairo_rectangle(cr, W * (1.0 - p_reveal), 0, W * p_reveal, H * p_reveal);
         cairo_clip(cr);
     }
     GtkStyleContext *sc = gtk_widget_get_style_context(w);
     gtk_render_background(sc, cr, 0, 0, W, H);
     gtk_render_frame(sc, cr, 0, 0, W, H);
-    gpointer p[2] = { w, cr };
     gtk_container_forall(GTK_CONTAINER(w), draw_kid, p);
     cairo_restore(cr);
     return TRUE;
 }
 
+/* every frame of the morph: the indicator row rides on the shape and fades out (in on the way back), a changed panel size retargets */
+static gboolean close_idle(gpointer d) { (void)d; closing = FALSE; panel_close(); return G_SOURCE_REMOVE; }
+static void mo_frame(gpointer d, gboolean settled) {
+    (void)d;
+    if (lstate == LS_CLOSED || !panel || !stage) return;
+    GtkWidget *row = NO_INDICATOR ? NULL : indicator_row();
+    double T = MAX(60, morph_ms()), tm = (g_get_monotonic_time() - mo_t0) / 1000.0 * l_speed;
+    MRect r = morph_rect(&mo);
+    if (row) {
+        double o = closing ? 0.0 : (indicator_row_dim() ? 0.0 : 1.0 - ease_out(tm / (0.35 * T)));   /* no text flashes on the way back: the indicator comes back by itself */
+        gtk_widget_set_opacity(row, o);
+        gtk_fixed_move(GTK_FIXED(stage), row, (int)(r.x + (r.w - row_w) / 2), (int)r.y);
+        if (!closing && o <= 0.0) gtk_widget_hide(row);
+    }
+    if (closing) {
+        mo_content_a = 1.0 - ease_out(tm / (0.3 * T));
+        gtk_widget_queue_draw(panel);
+        if (settled) g_idle_add(close_idle, NULL);
+        return;
+    }
+    if (lstate != LS_OPEN) return;
+    GtkAllocation a;
+    gtk_widget_get_allocation(panel, &a);
+    if (a.width > 1 && (fabs(mo.t[0] - a.x) > 0.5 || fabs(mo.t[1] - a.y) > 0.5 || fabs(mo.t[2] - (a.x + a.width)) > 0.5 || fabs(mo.t[3] - (a.y + a.height)) > 0.5)) {
+        morph_go(&mo, (MRect){ a.x, a.y, a.width, a.height });   /* the content asked for another size meanwhile */
+        return;
+    }
+    if (settled) { mo_on = FALSE; if (row) gtk_widget_hide(row); gtk_widget_queue_draw(stage); gtk_widget_queue_draw(panel); }
+}
+
 static void apply_intro(double te) {                         /* te = ms since the panel started to open */
-    p_reveal = ease_out(te / expand_ms);
+    if (!l_morph) p_reveal = ease_out(te / expand_ms);
     gtk_widget_queue_draw(panel);
     if (intro_done) return;
     gboolean film = cardw && cardw_film;
     double base = expand_ms * 0.3, row0 = expand_ms * 0.5;
     if (film) {                                              /* the card plays its own film first, the search box and the rows follow it */
-        base = card_embed_film(te, &film_total, &film_edelay);
+        base = card_embed_film(MAX(te, 0.0), &film_total, &film_edelay);
         row0 = base + elem_delay;
     }
     int rd = MIN(elem_delay, 12);                            /* the rows follow quickly */
@@ -1279,8 +1335,15 @@ static void apply_intro(double te) {                         /* te = ms since th
 
 static void arrive(void) {
     lstate = LS_OPEN;
-    if (!NO_INDICATOR) indicator_overlay_arrived();            /* hides the indicator row, window#launcher */
-    apply_intro(0);                                          /* before the first frame: nothing of the rows / card may show yet */
+    if (l_morph) {                                           /* the panel is laid out: the shape goes from the indicator to it */
+        GtkAllocation a;
+        gtk_widget_get_allocation(panel, &a);
+        p_reveal = 1.0;
+        mo_delay = morph_ms() * 0.55;                        /* the content comes in when the shape has nearly arrived */
+        mo_t0 = g_get_monotonic_time();
+        morph_go(&mo, (MRect){ a.x, a.y, a.width, a.height });
+    } else if (!NO_INDICATOR) indicator_overlay_arrived();   /* hides the indicator row, window#launcher */
+    apply_intro(l_morph ? -mo_delay : 0);                                          /* before the first frame: nothing of the rows / card may show yet */
     gtk_widget_grab_focus(entry);
 }
 
@@ -1308,7 +1371,7 @@ static gboolean tick(GtkWidget *w, GdkFrameClock *fc, gpointer d) {
         if (warm_n >= 2 || t_ms >= 200) { travel_ms = (int)t_ms; arrive(); }
         return G_SOURCE_CONTINUE;
     }
-    double te = (t_ms - travel_ms) * l_speed;                 /* open_speed: 2 = the whole opening twice as fast */
+    double te = (t_ms - travel_ms) * l_speed - (l_morph ? mo_delay : 0);   /* open_speed: 2 = the whole opening twice as fast */
     apply_intro(te);
     double total = expand_ms * 1.1 + (int)shown->len * elem_delay + 40;
     if (cardw && cardw_film) total = MAX(film_total, intro_end) + 120;
@@ -1331,6 +1394,8 @@ static void panel_close(void) {
     if (lstate == LS_CLOSED) return;
     lstate = LS_CLOSED;
     sb_ticking = FALSE;
+    morph_stop(&mo);
+    mo_on = FALSE; closing = FALSE;
     if (dmenu_mode) {                                        /* the process ends: print the result and go */
         if (chosen) { g_print("%s\n", chosen); fflush(stdout); }
         exit(chosen ? 0 : 1);
@@ -1384,6 +1449,22 @@ static void launcher_css(void) {
     gtk_css_provider_load_from_data(cp, css, -1, NULL);
     g_free(css);
     gtk_style_context_add_provider_for_screen(gdk_screen_get_default(), GTK_STYLE_PROVIDER(cp), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+}
+
+static void panel_close_soft(void) {                         /* Esc, a click outside, the key again: the shape goes back to the indicator */
+    if (closing || lstate == LS_CLOSED) return;
+    if (!l_morph || lstate != LS_OPEN || NO_INDICATOR || !panel || !stage) { panel_close(); return; }
+    closing = TRUE;
+    mo_content_a = 1.0;
+    mo_t0 = g_get_monotonic_time();
+    if (!mo_on) {                                            /* settled: start from the panel as it is */
+        GtkAllocation a;
+        gtk_widget_get_allocation(panel, &a);
+        morph_jump(&mo, (MRect){ a.x, a.y, a.width, a.height });
+        mo_on = TRUE;
+    }
+    gtk_widget_hide(indicator_row());
+    morph_go(&mo, (MRect){ rx0, ry0, row_w, row_h });
 }
 
 static void panel_build(void) {
@@ -1500,7 +1581,7 @@ static void read_cfg(void) {
 static gboolean idle_check(gpointer d) {                     /* a launcher nobody uses closes by itself: the keyboard grab cannot get stuck */
     (void)d;
     if (lstate == LS_CLOSED) { idle_id = 0; return G_SOURCE_REMOVE; }
-    if (l_idle_s > 0 && g_get_monotonic_time() - last_act > (gint64)l_idle_s * 1000000) { idle_id = 0; panel_close(); return G_SOURCE_REMOVE; }
+    if (l_idle_s > 0 && g_get_monotonic_time() - last_act > (gint64)l_idle_s * 1000000) { idle_id = 0; panel_close_soft(); return G_SOURCE_REMOVE; }
     return G_SOURCE_CONTINUE;
 }
 static void idle_start(void) {
@@ -1549,7 +1630,7 @@ static gboolean open_retry(gpointer d) {
 void launcher_open(void) {
     if (lstate != LS_CLOSED) return;
     if (!card_is_closed()) {                                  /* the card is up: let it go first */
-        card_close();
+        card_close_instant();
         g_timeout_add(40, open_retry, NULL);
         return;
     }
@@ -1569,7 +1650,15 @@ void launcher_open(void) {
     g_signal_connect(host, "button-press-event", G_CALLBACK(on_press), NULL);
     gtk_widget_add_events(host, GDK_BUTTON_PRESS_MASK);
     gtk_widget_show_all(stage);
-    if (!NO_INDICATOR) indicator_overlay_arrived();            /* the indicator is simply gone: the box growing from its corner says where it came from */
+    l_morph = morph_ms() > 0;
+    if (l_morph) {                                             /* the shape starts exactly where the indicator is */
+        morph_init(&mo, stage, mo_frame, NULL);
+        mo.speed = l_speed;
+        g_signal_connect(stage, "draw", G_CALLBACK(stage_draw), NULL);
+        indicator_overlay_name();                              /* window#launcher, so #indicator rules do not hit the panel */
+        morph_jump(&mo, (MRect){ rx0, ry0, row_w, row_h });
+        mo_on = TRUE; closing = FALSE;
+    } else indicator_overlay_arrived();                        /* the indicator is simply gone: the box growing from its corner says where it came from */
     list_fill();
     fit_rows(TRUE);
     lstate = LS_TRAVEL;
@@ -1612,7 +1701,7 @@ void launcher_toggle(void) {
     if (l_separate) { toggle_separate(m && *m ? m : NULL); g_free(m); return; }
     if (lstate == LS_CLOSED) { want_mode = mode; g_free(want_query); want_query = (!mode && m && *m) ? g_strdup(m) : NULL; launcher_open(); }
     else if (mode && !pmode) enter_picker(mode);               /* already open: jump into the picker */
-    else panel_close();
+    else panel_close_soft();
     g_free(m);
 }
 
@@ -1683,6 +1772,14 @@ static int standalone_run(void) {
     g_signal_connect(host, "button-press-event", G_CALLBACK(on_press), NULL);
     gtk_widget_add_events(host, GDK_BUTTON_PRESS_MASK);
     gtk_widget_show_all(host);
+    l_morph = morph_ms() > 0;
+    if (l_morph) {                                             /* no indicator here: the shape starts as a thin line at the top of the panel */
+        morph_init(&mo, stage, mo_frame, NULL);
+        mo.speed = l_speed;
+        g_signal_connect(stage, "draw", G_CALLBACK(stage_draw), NULL);
+        morph_jump(&mo, (MRect){ panel_x + panel_w / 2.0 - 30, panel_y, 60, 4 });
+        mo_on = TRUE; closing = FALSE;
+    }
     list_fill();
     fit_rows(TRUE);
     lstate = LS_TRAVEL;

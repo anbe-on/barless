@@ -43,6 +43,10 @@ GtkWidget *indicator_row(void);
 void indicator_recheck(void);
 GtkWidget *indicator_overlay_begin(GtkWidget *stage, int *mw, int *mh, int *x0, int *y0, int *rw, int *rh);
 void indicator_overlay_arrived(void);
+void indicator_overlay_name(void);
+gboolean indicator_row_dim(void);                /* the indicator was not showing when the stage opened: its text must not flash */
+GtkWidget *indicator_card_begin(GtkWidget *stage, int *mw, int *mh, int *x0, int *y0, int *rw, int *rh);
+void indicator_card_input(int x, int y, int w, int h);
 void indicator_overlay_end(GtkWidget *stage);
 char *barless_pidfile(void);
 
@@ -56,6 +60,7 @@ int  launcher_dmenu(int argc, char **argv);
 void card_init(void);                            /* once: css, tray */
 void card_open(void);                            /* grow (build the window) */
 void card_close(void);                           /* animate away, then destroy the window */
+void card_close_instant(void);
 gboolean card_is_closed(void);
 GtkWidget *card_embed_new(int inner_w, const char *sections, void (*done)(void));   /* the card as a widget for the launcher */
 void card_embed_free(void);
@@ -65,6 +70,25 @@ int card_embed_expand_ms(void);
 void card_set_standalone(void);
 int  launcher_menu(int argc, char **argv);            /* --menu: the launcher in a process of its own */
 char *accent_color(void);                        /* accent from config / theme (g_free) */
+
+/* ---- morph.c: one shape that changes position and size, edge by edge, like a fluid ---- */
+typedef struct { double x, y, w, h; } MRect;
+typedef struct {
+    double e[4], v[4], t[4];                       /* left, top, right, bottom: position, velocity, target */
+    GtkWidget *w;                                  /* the stage the shape lives in (it drives the frame clock and is redrawn) */
+    guint tick_id;
+    gint64 last_us;
+    double speed;                                  /* time scale (open_speed) */
+    void (*frame)(gpointer data, gboolean settled);
+    gpointer data;
+} Morph;
+int   morph_ms(void);                              /* [dashboard] morph_ms; 0 = off */
+void  morph_init(Morph *m, GtkWidget *stage, void (*frame)(gpointer, gboolean), gpointer data);
+void  morph_jump(Morph *m, MRect r);               /* put the shape there at once */
+void  morph_go(Morph *m, MRect to);                /* spring to it (may be called again while moving: it keeps its speed) */
+MRect morph_rect(const Morph *m);
+void  morph_stop(Morph *m);
+void  morph_draw_shape(GtkWidget *style, cairo_t *cr, MRect r);   /* background + frame of `style`'s CSS box at r */
 
 /* ---- tray.c --------------------------------------------------------- */
 /* box == NULL: only act as the StatusNotifier watcher (no icons are loaded).

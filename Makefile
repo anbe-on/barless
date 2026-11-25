@@ -1,7 +1,7 @@
 CC      ?= gcc
 CFLAGS  ?= -O2 -Wall -Wextra
 PKGS    := gtk+-3.0 gtk-layer-shell-0
-SRC     := main.c common.c indicator.c card.c launcher.c tray.c
+SRC     := main.c common.c indicator.c card.c launcher.c tray.c morph.c
 
 barless: $(SRC) barless.h
 	$(CC) $(CFLAGS) $(SRC) -o $@ $$(pkg-config --cflags --libs $(PKGS)) -lm
