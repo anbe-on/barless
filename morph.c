@@ -11,9 +11,9 @@ static double m_bounce = 0.5, m_stretch = 0.5;
 
 static void morph_cfg(void) {
     if (m_ms >= 0) return;
-    m_ms = MAX(0, cfg_int("dashboard", "morph_ms", 100));
-    m_bounce = CLAMP(cfg_dbl("dashboard", "morph_bounce", 0.2), 0.0, 1.0);
-    m_stretch = CLAMP(cfg_dbl("dashboard", "morph_stretch", 0.2), 0.0, 1.0);
+    m_ms = MAX(0, cfg_int("dashboard", "morph_ms", 300));
+    m_bounce = CLAMP(cfg_dbl("dashboard", "morph_bounce", 0.5), 0.0, 1.0);
+    m_stretch = CLAMP(cfg_dbl("dashboard", "morph_stretch", 0.5), 0.0, 1.0);
 }
 int morph_ms(void) { morph_cfg(); return m_ms; }
 

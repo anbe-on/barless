@@ -421,7 +421,11 @@ void indicator_collapse(GtkWidget *card) {
 }
 
 /* ---- launcher: the window covers the screen while it is open, the indicator row travels across it ---- */
-GtkWidget *indicator_row(void) { return row; }
+/* While the row is in a stage it sits in a wrapper named "indicator": the stage's window is renamed (window#launcher, so #indicator
+   rules do not hit the panel), and the row's own rules (#indicator label ...) still need an ancestor with that name, or its text
+   would turn plain white. */
+static GtkWidget *rowwrap = NULL;
+GtkWidget *indicator_row(void) { return rowwrap ? rowwrap : row; }
 void indicator_recheck(void) { schedule_recheck(150); }
 
 static gboolean row_dim = FALSE;
@@ -449,10 +453,14 @@ static GtkWidget *stage_begin(gboolean card, GtkWidget *stage, int *mw, int *mh,
     *x0 = was_dodged ? (g.width - nat) / 2 : g.width - mr - nat;
     *y0 = gtk_layer_get_margin(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_TOP);
     expanded = TRUE;
+    rowwrap = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_name(rowwrap, "indicator");
     g_object_ref(row);
     gtk_container_remove(GTK_CONTAINER(root), row);
-    gtk_fixed_put(GTK_FIXED(stage), row, *x0, *y0);
+    gtk_container_add(GTK_CONTAINER(rowwrap), row);
     g_object_unref(row);
+    gtk_fixed_put(GTK_FIXED(stage), rowwrap, *x0, *y0);
+    gtk_widget_show(rowwrap);
     gtk_widget_set_size_request(stage, g.width, g.height);
     gtk_box_pack_start(GTK_BOX(root), stage, TRUE, TRUE, 0);
     gtk_layer_set_anchor(GTK_WINDOW(win), GTK_LAYER_SHELL_EDGE_RIGHT, TRUE);
@@ -486,14 +494,15 @@ void indicator_overlay_name(void) { gtk_widget_set_name(win, "launcher"); }   /*
 
 void indicator_overlay_arrived(void) {                     /* the row reached the middle: it is replaced by the panel */
     gtk_widget_set_name(win, "launcher");                  /* CSS: window#launcher, so #indicator rules do not hit the panel */
-    gtk_widget_hide(row);
+    gtk_widget_hide(indicator_row());
 }
 
 void indicator_overlay_end(GtkWidget *stage) {
     expanded = FALSE;
     g_object_ref(row);
-    gtk_container_remove(GTK_CONTAINER(stage), row);
-    gtk_widget_destroy(stage);                             /* the panel and everything in it */
+    gtk_container_remove(GTK_CONTAINER(rowwrap), row);
+    rowwrap = NULL;
+    gtk_widget_destroy(stage);                             /* the panel, the wrapper and everything in it */
     gtk_box_pack_start(GTK_BOX(root), row, FALSE, FALSE, 0);
     g_object_unref(row);
     gtk_layer_set_keyboard_mode(GTK_WINDOW(win), GTK_LAYER_SHELL_KEYBOARD_MODE_NONE);
